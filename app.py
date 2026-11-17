@@ -5,6 +5,7 @@ import json
 import mimetypes
 import secrets
 import socket
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,60 @@ RUNS = ROOT / 'runs'
 JOBS = {}
 LOCK = threading.RLock()
 WORKERS = threading.Semaphore(4)
+APP_VERSION = '1.0.0'
+MAX_PARALLEL_JOBS = 4
+MAX_BATCH_SITES = 20
+TERMINAL_STATES = {'completed', 'failed', 'interrupted', 'needs_recheck'}
+STAGE_PROGRESS = {
+    'queued': 2, 'detecting': 8, 'navigation': 18, 'navigation_check': 22,
+    'navigation_ai': 25, 'navigation_fastpath': 30, 'navigation_targets': 35,
+    'awaiting_confirmation': 35, 'listing': 48, 'ai': 55, 'ai_repair': 58,
+    'products': 72, 'preview': 82, 'packaging': 92, 'completed': 100,
+}
+
+
+def _sites(value):
+    """Normalise a single URL or a newline/comma separated batch."""
+    if not isinstance(value, str):
+        raise TypeError('站点地址必须是文本')
+    result = []
+    for item in value.replace('\r', '\n').replace(',', '\n').split('\n'):
+        item = item.strip()
+        if item and item not in result:
+            result.append(item)
+    if not result:
+        raise ValueError('请输入站点 URL')
+    if len(result) > MAX_BATCH_SITES:
+        raise ValueError(f'单次最多提交 {MAX_BATCH_SITES} 个站点')
+    if any(len(item) > 2000 for item in result):
+        raise ValueError('站点 URL 过长')
+    return result
+
+
+def _progress(job):
+    if job.get('status') == 'failed':
+        return max(1, int(job.get('progress', 0)))
+    return max(int(job.get('progress', 0)), STAGE_PROGRESS.get(job.get('status'), 0))
+
+
+def update_status(fetch=False):
+    """Return a non-destructive Git update status for the private distribution."""
+    result = {'version': APP_VERSION, 'repository': 'yuhang995/ai-crawler-workbench',
+              'update_available': False, 'managed_by_git': (ROOT / '.git').exists()}
+    if not result['managed_by_git']:
+        result['message'] = '当前为压缩包安装，请使用 Git 克隆版启用一键更新'
+        return result
+    try:
+        if fetch:
+            subprocess.run(['git', 'fetch', '--quiet', 'origin', 'main'], cwd=ROOT,
+                           check=True, timeout=45, capture_output=True, text=True)
+        local = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+        remote = subprocess.check_output(['git', 'rev-parse', 'origin/main'], cwd=ROOT, text=True).strip()
+        result.update(local_commit=local[:12], remote_commit=remote[:12],
+                      update_available=local != remote)
+    except (OSError, subprocess.SubprocessError) as error:
+        result['message'] = redact_sensitive(error)
+    return result
 
 
 def _normalise_host(host):
@@ -174,6 +229,8 @@ def execute(job):
             with LOCK:
                 job['events'].append(event)
                 job['status'] = event['stage']
+                job['progress'] = max(job.get('progress', 0),
+                                      int(event.get('progress', STAGE_PROGRESS.get(event['stage'], 0))))
                 if 'categories' in event:
                     job['categories'] = event['categories']
                 if 'samples' in event:
@@ -208,6 +265,7 @@ def resume_after_access_confirmation(job):
 def snapshot(job):
     result={k: v for k, v in job.items() if k not in {'confirm', 'uploaded_categories', 'proxy'}}
     result['proxy_display'] = redact_proxy(job.get('proxy'))
+    result['progress'] = _progress(job)
     if job.get('uploaded_categories') is not None:
         result['uploaded_category_count'] = len(job['uploaded_categories'])
     if job.get('status')=='navigation_ai':
@@ -243,6 +301,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/jobs':
             with LOCK:
                 return self.respond([snapshot(j) for j in reversed(list(JOBS.values()))])
+        if path == '/api/system':
+            with LOCK:
+                active = sum(j.get('status') not in TERMINAL_STATES and
+                             j.get('status') not in {'needs_access_confirm', 'access_confirmed'}
+                             for j in JOBS.values())
+            return self.respond({'version': APP_VERSION, 'parallel_workers': MAX_PARALLEL_JOBS,
+                                 'active_jobs': active, **update_status(False)})
         pieces = path.strip('/').split('/')
         if len(pieces)==4 and pieces[:2]==['api','jobs'] and pieces[3]=='preview':
             job=JOBS.get(pieces[2])
@@ -300,9 +365,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(size))
             path = urlsplit(self.path).path
             if path == '/api/jobs':
-                site = body.get('site', '').strip()
-                if not site or len(site) > 2000:
-                    raise ValueError('请输入站点 URL')
+                sites = _sites(body.get('site', ''))
                 submitter = _clean_submitter(body.get('submitter'))
                 if body.get('full_products') and body.get('manual'):
                     raise ValueError('全自动全量模式不能同时启用手动确认')
@@ -317,21 +380,53 @@ class Handler(BaseHTTPRequestHandler):
                     # live storefront.  Bound it here before queuing work.
                     if not uploaded_categories or len(uploaded_categories) > 5000:
                         raise ValueError('分类文件必须包含 1~5000 个目录')
-                job = {'id': secrets.token_hex(8), 'site': site, 'manual': bool(body.get('manual', False)),
-                       'full_products': bool(body.get('full_products', False)), 'visual_check': bool(body.get('visual_check', False)),
-                       'all_categories': bool(body.get('all_categories', False)), 'force_ai': bool(body.get('force_ai', False)),
-                       'category': body.get('category') or None, 'submitter': submitter or None,
-                       'uploaded_categories': uploaded_categories,
-                       'proxy': proxy,
-                       'status': 'queued', 'events': [], 'confirm': threading.Event()}
+                if uploaded_categories is not None and len(sites) != 1:
+                    raise ValueError('手动分类文件一次只能用于一个站点')
                 with LOCK:
-                    if sum(j['status'] not in ('completed', 'failed', 'interrupted', 'needs_recheck', 'needs_access_confirm', 'access_confirmed') for j in JOBS.values()) >= 8:
+                    active = sum(j['status'] not in ('completed', 'failed', 'interrupted', 'needs_recheck', 'needs_access_confirm', 'access_confirmed') for j in JOBS.values())
+                    if active + len(sites) > 24:
                         return self.respond({'error': '待处理任务过多'}, 429)
-                    JOBS[job['id']] = job
-                    (RUNS / job['id']).mkdir(parents=True, exist_ok=True)
-                    save_json(RUNS / job['id'] / 'progress.json', snapshot(job))
-                threading.Thread(target=execute, args=(job,), daemon=True).start()
-                return self.respond(snapshot(job), 201)
+                    jobs = []
+                    batch_id = secrets.token_hex(6) if len(sites) > 1 else None
+                    for site in sites:
+                        job = {'id': secrets.token_hex(8), 'batch_id': batch_id, 'site': site,
+                               'manual': bool(body.get('manual', False)),
+                               'full_products': bool(body.get('full_products', False)),
+                               'visual_check': bool(body.get('visual_check', False)),
+                               'all_categories': bool(body.get('all_categories', False)),
+                               'force_ai': bool(body.get('force_ai', False)),
+                               'category': body.get('category') or None, 'submitter': submitter or None,
+                               'uploaded_categories': uploaded_categories, 'proxy': proxy,
+                               'status': 'queued', 'progress': 2, 'events': [],
+                               'confirm': threading.Event()}
+                        JOBS[job['id']] = job
+                        jobs.append(job)
+                        (RUNS / job['id']).mkdir(parents=True, exist_ok=True)
+                        save_json(RUNS / job['id'] / 'progress.json', snapshot(job))
+                for job in jobs:
+                    threading.Thread(target=execute, args=(job,), daemon=True).start()
+                if len(jobs) == 1:
+                    return self.respond(snapshot(jobs[0]), 201)
+                return self.respond({'batch_id': batch_id, 'count': len(jobs),
+                                     'jobs': [snapshot(job) for job in jobs]}, 201)
+            if path == '/api/update/check':
+                return self.respond(update_status(True))
+            if path == '/api/update/apply':
+                status = update_status(True)
+                if not status.get('managed_by_git'):
+                    return self.respond({'error': status.get('message', '当前安装不支持一键更新')}, 409)
+                dirty = subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip()
+                if dirty:
+                    return self.respond({'error': '检测到本地代码修改，为防止覆盖已取消更新'}, 409)
+                if not status.get('update_available'):
+                    return self.respond({**status, 'updated': False, 'message': '已经是最新版本'})
+                completed = subprocess.run(['git', 'pull', '--ff-only', 'origin', 'main'], cwd=ROOT,
+                                           timeout=120, capture_output=True, text=True)
+                if completed.returncode:
+                    return self.respond({'error': redact_sensitive(completed.stderr or completed.stdout)}, 409)
+                return self.respond({**update_status(False), 'updated': True,
+                                     'restart_required': True,
+                                     'message': '更新完成，请重启工作台以启用后端更新'})
             pieces = path.strip('/').split('/')
             if len(pieces)==4 and pieces[:2]==['api','jobs'] and pieces[3]=='open-access-confirm':
                 with LOCK:
