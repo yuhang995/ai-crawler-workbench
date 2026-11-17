@@ -1,0 +1,72 @@
+[
+  {
+    "name": "iniu",
+    "site": "https://iniushop.com/",
+    "source": "prior verified INIU platform case"
+  },
+  {
+    "name": "touchland",
+    "source": "D:\\pythonProject\\work\\touchland\\url.json",
+    "site": "https://touchland.com/",
+    "historical_categories": 7,
+    "resolved_url": "https://touchland.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  },
+  {
+    "name": "simplemodern",
+    "source": "D:\\pythonProject\\work\\simplemodern\\url.json",
+    "site": "https://www.simplemodern.com/",
+    "historical_categories": 52,
+    "resolved_url": "https://www.simplemodern.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  },
+  {
+    "name": "sunbum",
+    "source": "D:\\pythonProject\\work\\sunbum\\url.json",
+    "site": "https://www.sunbum.com/",
+    "historical_categories": 32,
+    "resolved_url": "https://www.sunbum.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  },
+  {
+    "name": "supergoop",
+    "source": "D:\\pythonProject\\work\\supergoop\\url.json",
+    "site": "https://supergoop.com/",
+    "historical_categories": 30,
+    "resolved_url": "https://supergoop.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  },
+  {
+    "name": "allbirds",
+    "source": "D:\\pythonProject\\work\\allbirds\\url.json",
+    "site": "https://www.allbirds.com/",
+    "historical_categories": 47,
+    "resolved_url": "https://www.allbirds.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  }
+]

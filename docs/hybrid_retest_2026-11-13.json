@@ -1,0 +1,186 @@
+{
+  "mode": "hybrid",
+  "jobs": [
+    {
+      "id": "12546553f5073812",
+      "site": "hexclad.com",
+      "category": "https://hexclad.com/collections/all-hexwear?filter.p.m.custom.plp_filters_product_category_list=Bags",
+      "status": "completed",
+      "report": {
+        "status": "completed",
+        "site": "https://hexclad.com/",
+        "mode": "standard_shopify",
+        "manual": false,
+        "seconds": 481.484,
+        "nav_seconds": 462.3286,
+        "validation": {
+          "products": 3,
+          "variants": 3,
+          "passed": true,
+          "categories": 42,
+          "sampled_categories": 1,
+          "seconds": 1.9742
+        },
+        "samples": [
+          {
+            "id": "7352381243526",
+            "title": "The Everything Everywhere Bag (Houndstooth-Onyx)",
+            "url": "https://hexclad.com/products/the-everything-everywhere-bag-houndstooth-onyx",
+            "variants": 1
+          },
+          {
+            "id": "7353842663558",
+            "title": "The Everything Everywhere Bag (Chevron-Slate)",
+            "url": "https://hexclad.com/products/the-everything-everywhere-bag-chevron-slate",
+            "variants": 1
+          },
+          {
+            "id": "7352648532102",
+            "title": "The Everything Everywhere Bag (Houndstooth-Forest)",
+            "url": "https://hexclad.com/products/the-everything-everywhere-bag-houndstooth-forest",
+            "variants": 1
+          }
+        ],
+        "llm_invocations": 1,
+        "directory_cli_seconds": 435.484,
+        "reused_directory": false,
+        "seconds_scope": "whole_job",
+        "navigation_mode": "hybrid",
+        "program_navigation_seconds": 26.516,
+        "listing_categories": 1,
+        "listing_links": 8,
+        "first3_seconds": 9.4104,
+        "first3_cpu_seconds": 0.1553,
+        "total_seconds": 481.484
+      },
+      "offline_verified": true,
+      "page_product_category_urls": 0
+    },
+    {
+      "id": "b5dc2b0ac36f85ec",
+      "site": "cozyearth.com",
+      "category": null,
+      "status": "completed",
+      "report": {
+        "status": "completed",
+        "site": "https://cozyearth.com/",
+        "mode": "standard_shopify",
+        "manual": false,
+        "seconds": 565.413,
+        "nav_seconds": 524.0452,
+        "validation": {
+          "products": 3,
+          "variants": 334,
+          "passed": true,
+          "categories": 129,
+          "sampled_categories": 1,
+          "seconds": 7.7545
+        },
+        "samples": [
+          {
+            "id": "11961511507",
+            "title": "Bamboo Sheet Set",
+            "url": "https://cozyearth.com/products/bamboo-sheet-set",
+            "variants": 160
+          },
+          {
+            "id": "4699132788833",
+            "title": "Women's Bamboo Stretch-Knit Long Sleeve Pajama Set",
+            "url": "https://cozyearth.com/products/womens-bamboo-stretch-knit-long-sleeve-pajama-set",
+            "variants": 166
+          },
+          {
+            "id": "7984954507444",
+            "title": "Double Bubble Cuddle Blanket",
+            "url": "https://cozyearth.com/products/double-bubble-cuddle-blanket",
+            "variants": 8
+          }
+        ],
+        "llm_invocations": 1,
+        "directory_cli_seconds": 456.297,
+        "reused_directory": false,
+        "seconds_scope": "whole_job",
+        "navigation_mode": "hybrid",
+        "program_navigation_seconds": 67.5,
+        "listing_categories": 1,
+        "listing_links": 125,
+        "first3_seconds": 4.0624,
+        "first3_cpu_seconds": 0.4519,
+        "total_seconds": 565.413
+      },
+      "offline_verified": true,
+      "page_product_category_urls": 0
+    },
+    {
+      "id": "3c82b7e092b5062f",
+      "site": "darntough.com",
+      "category": null,
+      "status": "completed",
+      "report": {
+        "status": "completed",
+        "site": "https://darntough.com/",
+        "mode": "standard_shopify",
+        "manual": false,
+        "seconds": 319.394,
+        "nav_seconds": 274.1453,
+        "validation": {
+          "products": 3,
+          "variants": 31,
+          "passed": true,
+          "categories": 105,
+          "sampled_categories": 1,
+          "seconds": 2.2735
+        },
+        "samples": [
+          {
+            "id": "6158193197242",
+            "title": "Men's Vangrizzle Boot Midweight Hiking Socks",
+            "url": "https://darntough.com/products/mens-merino-wool-vangrizzle-boot-cushioned-midweight-hiking-socks",
+            "variants": 12
+          },
+          {
+            "id": "7318614540474",
+            "title": "Women's Wild Life Crew Lightweight Lifestyle Socks",
+            "url": "https://darntough.com/products/womens-merino-wool-wild-life-crew-cushioned-lightweight-lifestyle-socks",
+            "variants": 13
+          },
+          {
+            "id": "8409641844922",
+            "title": "Men's Run Micro Crew Cushioned Ultra-Lightweight Running Socks",
+            "url": "https://darntough.com/products/mens-merino-wool-run-micro-crew-cushioned-ultra-lightweight-running-socks",
+            "variants": 6
+          }
+        ],
+        "llm_invocations": 1,
+        "directory_cli_seconds": 191.86,
+        "reused_directory": false,
+        "seconds_scope": "whole_job",
+        "navigation_mode": "hybrid",
+        "program_navigation_seconds": 82.157,
+        "listing_categories": 1,
+        "listing_links": 332,
+        "first3_seconds": 32.3997,
+        "first3_cpu_seconds": 0.1304,
+        "total_seconds": 319.394
+      },
+      "offline_verified": true,
+      "page_product_category_urls": 0
+    },
+    {
+      "id": "caa34fac889f4a94",
+      "site": "explodingkittens.com",
+      "category": null,
+      "status": "failed",
+      "failure": {
+        "status": "failed",
+        "error": "目录 AI 未完成核对：{'complete': False, 'reason': 'required_expanded_browser_evidence_missing', 'unresolved': ['Games 桌面菜单未实际展开：悬停、内部按钮 click()、菜单项实际点击后 aria-expanded=false、hidden=true；无法确认可见子菜单覆盖。没有满足至少一份实际展开快照的要求。'], 'candidate_status': 'provisional_not_approved', 'candidate_count': 19}",
+        "seconds": 377.034
+      },
+      "llm_invocations": 1,
+      "published": false
+    }
+  ],
+  "unit_tests": 61,
+  "conclusion": "3/4 completed and downloaded ZIPs verified offline. Hybrid improves these runs but does not meet the original 1-3 minute target; menu expansion remains a failure mode.",
+  "timing_note": "Per-job elapsed time excludes worker queue wait; each site used one directory CLI session. Product validation covers three samples and listing links of the selected category, not all categories."
+}

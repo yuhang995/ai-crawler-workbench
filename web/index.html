@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
+  <title>AI Crawler · Local Console</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/light.css">
+</head>
+<body><div class="ambient ambient-one"></div><div class="ambient ambient-two"></div><main>
+  <header class="masthead"><div class="brand-mark" aria-hidden="true"><span></span></div><div class="brand-copy"><span class="eyebrow">LOCAL CRAWLER CONSOLE</span><h1>采集工作台</h1><p>校验目录、验证真实商品、交付独立数据包。</p></div><div class="live-indicator"><i></i><span>本机运行</span></div></header>
+  <section class="panel launch-panel" aria-labelledby="launch-title">
+    <div class="panel-heading"><div><span class="section-kicker">NEW RUN</span><h2 id="launch-title">新建采集任务</h2></div><span class="keyboard-hint">Ctrl / ⌘ + Enter</span></div>
+    <form id="new-job">
+      <div class="form-grid primary-fields"><label class="field field-site"><span>站点地址 <b>REQUIRED</b></span><div class="input-shell"><i class="field-icon">↗</i><input name="site" required placeholder="https://example.com" autocomplete="url"></div></label><label class="field"><span>提交人 <em>OPTIONAL</em></span><input name="submitter" maxlength="80" placeholder="例如：小李" autocomplete="name"></label></div>
+      <div class="form-grid secondary-fields"><label class="field"><span>指定分类 <em>OPTIONAL</em></span><input name="category" placeholder="留空则自动选取最深层分类"></label><label class="field proxy-field"><span>代理地址 <em>OPTIONAL</em></span><div class="input-action"><input name="proxy" type="password" placeholder="http://user:pass@host:port" autocomplete="off"><button class="input-button" type="button" id="restore-proxy" hidden>回填最近</button></div><small>仅保存在当前浏览器，日志与报告会自动脱敏。</small></label></div>
+      <div class="switch-board" role="group" aria-label="任务选项">
+        <label class="switch-option"><input name="full_products" type="checkbox"><span class="switch"><i></i></span><span><b>全量商品</b><small>遍历全部商品</small></span></label>
+        <label class="switch-option"><input name="manual" type="checkbox"><span class="switch"><i></i></span><span><b>手动确认</b><small>采集前审核目录</small></span></label>
+        <label class="switch-option"><input name="use_category_file" type="checkbox"><span class="switch"><i></i></span><span><b>分类文件</b><small>使用现成 url.json</small></span></label>
+        <label class="switch-option"><input name="all_categories" type="checkbox"><span class="switch"><i></i></span><span><b>全部目录</b><small>收集所有列表</small></span></label>
+        <label class="switch-option"><input name="force_ai" type="checkbox"><span class="switch"><i></i></span><span><b>非标处理</b><small>启用 AI 适配</small></span></label>
+      </div>
+      <label id="category-file-row" class="upload-zone" hidden><span>选择现成的 url.json</span><input name="category_file" type="file" accept=".json,application/json"><small>上传后跳过自动目录提取，校验通过即进入商品采集。</small></label>
+      <div class="form-footer"><p class="hint">默认采集 1 个分类与前 3 个父商品，并生成可独立验证的交付包。</p><button class="button button-primary" type="submit"><span>开始采集</span><i>→</i></button></div><p id="error" role="alert"></p>
+    </form>
+  </section>
+  <section class="workspace" aria-labelledby="jobs-title"><div class="section-title"><div><span class="section-kicker">RUNS</span><h2 id="jobs-title">任务与产物</h2></div><span class="refresh-note"><i></i>每秒自动更新</span></div><div class="overview" id="overview" aria-label="任务概览"></div><nav class="filters" id="status-filters" aria-label="任务状态筛选"></nav><div id="jobs"><div class="empty-state"><span>◇</span><h3>暂无任务</h3><p>输入站点地址，开始第一次采集。</p></div></div></section>
+</main><div id="toast" role="status" aria-live="polite"></div><script src="/app.js"></script></body></html>

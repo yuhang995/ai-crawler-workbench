@@ -1,0 +1,40 @@
+# 目录采集避雷手册
+
+- CSS `:hover` 菜单点击后不改变 `aria-expanded` 不代表没有子菜单；先查已加载 DOM 和 `home-menu-*.html`，禁止重复点击死循环。
+- `View All ›`、`Shop Now >`、Explore、Discover、Learn More 是通用按钮；去掉首尾箭头和标点后，向上找所属列或卡片真实标题。
+- 清除独立 New、Sale、Free Engraving、评分及 badge/tag/pill/rebate 角标；不要截断 New Releases 等真实名称。
+- 允许 `/collections/<handle>/<tag>`；同域集合规范跳转由发布层记录，不自行猜改 URL。
+- 排除 `/pages/`、`/products/` 推荐橱窗、账户、购物车、搜索、博客及 gift-card。
+- 桌面主菜单是一级归属来源；不要混入移动抽屉、页脚和推荐卡片。
+- 同一 URL 可属于多个真实分组，不跨分类去重。筛选列表只取正式 CollectionGrid 等网格，禁止 FAQ 链接混入；更新 page 参数不能用 dict 折叠重复 filter 值。
+- 保留有语义的 tag、filter 查询条件；不能偷换成未筛选全集。
+- 程序可补 roots/branches 引用，但 URL 存在不等于父子归属正确；不能编造标题、证据或已完成声明。
+- AI 严格模式保留 confirmed_candidate；实用模式人工删改保存 before/after，新增 URL 核对同域真实分类，重建发布版本后才能采集。
+- 目录 AI 只整理 nav_digest.json 与截图；Python 事先展开顶层菜单，模型禁止操作浏览器或读取原始 HTML。
+- 模型只返回标签层级和已有 URL 索引；Python 生成 candidate/proof/decision 并运行 `python check_nav.py`，只有 OK 才接受，最多反馈修正一轮。
+- 无法验证时保留失败原因；不要改 check_nav.py 或校验模块骗过检查。
+- Open Farm：`@click.prevent="() => ..."` 是 HTML 属性，不是标题；旧 libxml2 会在箭头处误拆标签。统一使用 html_parser 的引号感知属性规范化，保留原始证据；禁止正则删除任意 JS 风格正文来掩盖解析错误。
+- Open Farm：标题恢复正常不等于目录完整；检查主 nav 外的 data-nav_group/data-nav_megamenu 面板，用真实状态控件关联 Dog/Cat，不能只输出三个主入口和首页卡片。
+- 外置面板的同名子菜单只属于各自物种/主分组；排除 headerDrawer 等移动副本。控件与面板不唯一或缺失时停止，不猜归属。
+- menu-dropdown 的直属 a 是一级入口，details/summary 展开，h3 列标题保留为二级。SHOP ALL + 一级名属于一级；aria-hidden 不代表视觉隐藏，Khaki/Browns 不能被 aria-label=Browns 替换。
+- OneCompress：btn-duplicate 是动画副本；仅当相邻真实标签文字完全相同时去掉副本，不能把任意重复单词一律删掉。
+- Nodpod：Menu/移动抽屉不是桌面一级分类；header--mobile-center 只是布局类，不代表整个 header 都是移动导航。
+- INIU：优先真实列标题；通用按钮与 New 角标不能拼成目录名。独立 New/Sale 分类不是附属角标。
+- Kyte Baby：Sleep Bags 等同 URL 在多个真实分支下可保留；不能按 slug 或文本相似度跨根合并、强行移动归属。
+- Leatherman：/collections 集合索引只作结构分组，不冒充商品集合；更深菜单保留前两级后扁平到第三级。
+- MaryRuth：AM & PM 等标题和换行后的描述分开；奖励、推荐好友、apps 路径排除。已确认分支无需全量重复 AI 审查。
+- Lola：根集合 feed 为空不一定无商品；有限显式商品卡片须逐项核对真实商品接口，或用明确子集合完整分页证明成员；不得伪造集合 feed。
+- 卡片的图片、标题和 CTA 可指向同 URL；无文字/通用 CTA 只向同一真实分组内唯一的同 URL 实名链接借标题，不能借邻卡标题。
+- HTTP 429 共享退避，403 最多一次匿名浏览器恢复。Supergoop 列表 goto 超时仅在同 URL 已渲染商品网格时继续源响应核验；空白/挑战页不能警告放行。
+- K18：含 ™ 等字符的 URL 比较前按百分号编码等价规范化；不同商品路径仍拒绝。Default Title 只是未声明选项槽的占位，不凭空生成变体。
+- 菜单标题中的逗号不能变成新层级；先存原始标签数组，再输出父级前缀格式并记录转换。
+- 禁止 collections.json/sitemap 自动补入 url.json；底账只验存在性。The Perfect Jean 的 129 条底账平铺是错误结果，菜单归属不明不得警告放行。
+- Sun Bum/Supergoop/Allbirds：加长超时不能解决低效浏览器循环；摘要目标 5 KB，不截断真实分类，模型最多 180 秒，排队和执行分别计时。
+- 摘要排除 /products/ 推荐卡片；Allbirds 的 Customer Favorites/Popular Picks 橱窗未给 URL 索引是预期过滤，不能为此报目录 unresolved。
+- 诊断须区分“标题命中黑名单”和“URL 路径命中黑名单”；核对真实 href，不能把 Digestive Support 的标题词臆测为链接路径。
+- AI 的最终决策须与自检版本一致；JSON 缩进变化可接受，修改候选/归属/证据后必须重跑。不要伪造 OK 或拿旧自检记录复用。
+- 历史页面回放、在线目录检查、三商品样本和全站采集是不同范围；模拟限速基准不含网络延迟，不能宣称实站固定 15 秒。
+- 视觉核对看图定可见性与分组，看配对 HTML/DOM 取真实 href；首屏没出现不能证明移动菜单混入，桌面抽屉和状态切换可能合法。
+- 字体或轮播等非结构疑点可警告；菜单层级、归属、完整性未确认则禁止发布。链接真实不等于目录正确；市场、访问阻塞和商品源响应错误仍阻断。
+- Playwright 卡在 waiting for fonts to load 时，仅该错误可回退 Chromium 当前渲染 PNG；保留字体与 DOM，不强制替换字体。只比较 header/顶部导航布局，最多重拍三次；Simple Modern 的 main 轮播切换不再导致导航截图失败。
+- Touchland 的 Menu Close 曾从隐藏 header-drawer 混入候选；对照桌面入口与祖先 display 判断，不能仅见 Drawer/Menu 字样就删掉合法桌面抽屉。

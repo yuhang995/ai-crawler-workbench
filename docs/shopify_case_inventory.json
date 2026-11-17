@@ -1,0 +1,1034 @@
+[
+  {
+    "site": "1stphorm.com",
+    "source": "D:\\pythonProject\\work\\1stphorm\\url.json",
+    "category_count": 70,
+    "collection_urls": 67
+  },
+  {
+    "site": "www.511tactical.com",
+    "source": "D:\\pythonProject\\work\\511tactical\\url.json",
+    "category_count": 163,
+    "collection_urls": 2
+  },
+  {
+    "site": "agolde.com",
+    "source": "D:\\pythonProject\\work\\agolde\\url.json",
+    "category_count": 113,
+    "collection_urls": 104
+  },
+  {
+    "site": "www.alaninu.com",
+    "source": "D:\\pythonProject\\work\\alaninu\\url.json",
+    "category_count": 4,
+    "collection_urls": 4
+  },
+  {
+    "site": "www.allbirds.com",
+    "source": "D:\\pythonProject\\work\\allbirds\\url.json",
+    "category_count": 47,
+    "collection_urls": 47
+  },
+  {
+    "site": "aloha-collection.com",
+    "source": "D:\\pythonProject\\work\\aloha-collection\\url.json",
+    "category_count": 55,
+    "collection_urls": 50
+  },
+  {
+    "site": "altfragrances.com",
+    "source": "D:\\pythonProject\\work\\altfragrances\\url.json",
+    "category_count": 10,
+    "collection_urls": 7
+  },
+  {
+    "site": "www.altrarunning.com",
+    "source": "D:\\pythonProject\\work\\altrarunning\\url.json",
+    "category_count": 49,
+    "collection_urls": 39
+  },
+  {
+    "site": "www.analuisa.com",
+    "source": "D:\\pythonProject\\work\\analuisa\\url.json",
+    "category_count": 14,
+    "collection_urls": 13
+  },
+  {
+    "site": "www.anker.com",
+    "source": "D:\\pythonProject\\work\\anker\\url.json",
+    "category_count": 44,
+    "collection_urls": 44
+  },
+  {
+    "site": "www.arcticfoxhaircolor.com",
+    "source": "D:\\pythonProject\\work\\arcticfoxhaircolor\\url.json",
+    "category_count": 27,
+    "collection_urls": 27
+  },
+  {
+    "site": "www.arenasport.com",
+    "source": "D:\\pythonProject\\work\\arenasport\\url.json",
+    "category_count": 89,
+    "collection_urls": 3
+  },
+  {
+    "site": "attitudeliving.com",
+    "source": "D:\\pythonProject\\work\\attitudeliving\\url.json",
+    "category_count": 111,
+    "collection_urls": 99
+  },
+  {
+    "site": "www.bandolierstyle.com",
+    "source": "D:\\pythonProject\\work\\bandolierstyle\\url.json",
+    "category_count": 90,
+    "collection_urls": 88
+  },
+  {
+    "site": "www.bareminerals.com",
+    "source": "D:\\pythonProject\\work\\bareminerals\\url.json",
+    "category_count": 50,
+    "collection_urls": 48
+  },
+  {
+    "site": "beistravel.com",
+    "source": "D:\\pythonProject\\work\\beistravel\\url.json",
+    "category_count": 83,
+    "collection_urls": 80
+  },
+  {
+    "site": "www.benchmade.com",
+    "source": "D:\\pythonProject\\work\\benchmade\\url.json",
+    "category_count": 47,
+    "collection_urls": 31
+  },
+  {
+    "site": "www.billabong.com",
+    "source": "D:\\pythonProject\\work\\billabong\\url.json",
+    "category_count": 55,
+    "collection_urls": 54
+  },
+  {
+    "site": "www.blackriflecoffee.com",
+    "source": "D:\\pythonProject\\work\\blackriflecoffee\\url.json",
+    "category_count": 23,
+    "collection_urls": 23
+  },
+  {
+    "site": "blackstoneproducts.com",
+    "source": "D:\\pythonProject\\work\\blackstoneproducts\\url.json",
+    "category_count": 41,
+    "collection_urls": 28
+  },
+  {
+    "site": "www.blenderbottle.com",
+    "source": "D:\\pythonProject\\work\\blenderbottle\\url.json",
+    "category_count": 9,
+    "collection_urls": 6
+  },
+  {
+    "site": "www.blueland.com",
+    "source": "D:\\pythonProject\\work\\blueland\\url.json",
+    "category_count": 13,
+    "collection_urls": 12
+  },
+  {
+    "site": "www.bollandbranch.com",
+    "source": "D:\\pythonProject\\work\\bollandbranch\\url.json",
+    "category_count": 68,
+    "collection_urls": 64
+  },
+  {
+    "site": "bonbonnyc.com",
+    "source": "D:\\pythonProject\\work\\bonbonnyc\\url.json",
+    "category_count": 8,
+    "collection_urls": 7
+  },
+  {
+    "site": "branchbasics.com",
+    "source": "D:\\pythonProject\\work\\branchbasics\\url.json",
+    "category_count": 11,
+    "collection_urls": 11
+  },
+  {
+    "site": "breeo.com",
+    "source": "D:\\pythonProject\\work\\breeo\\url.json",
+    "category_count": 12,
+    "collection_urls": 8
+  },
+  {
+    "site": "www.brumate.com",
+    "source": "D:\\pythonProject\\work\\brumate\\url.json",
+    "category_count": 89,
+    "collection_urls": 81
+  },
+  {
+    "site": "bruntworkwear.com",
+    "source": "D:\\pythonProject\\work\\bruntworkwear\\url.json",
+    "category_count": 66,
+    "collection_urls": 44
+  },
+  {
+    "site": "buffcitysoap.com",
+    "source": "D:\\pythonProject\\work\\buffcitysoap\\url.json",
+    "category_count": 93,
+    "collection_urls": 56
+  },
+  {
+    "site": "byoma.com",
+    "source": "D:\\pythonProject\\work\\byoma\\url.json",
+    "category_count": 24,
+    "collection_urls": 9
+  },
+  {
+    "site": "www.calpaktravel.com",
+    "source": "D:\\pythonProject\\work\\calpaktravel\\url.json",
+    "category_count": 38,
+    "collection_urls": 38
+  },
+  {
+    "site": "us.catalinacrunch.com",
+    "source": "D:\\pythonProject\\work\\catalinacrunch\\url.json",
+    "category_count": 6,
+    "collection_urls": 6
+  },
+  {
+    "site": "cecred.com",
+    "source": "D:\\pythonProject\\work\\cecred\\url.json",
+    "category_count": 18,
+    "collection_urls": 17
+  },
+  {
+    "site": "chomps.com",
+    "source": "D:\\pythonProject\\work\\chomps\\url.json",
+    "category_count": 9,
+    "collection_urls": 9
+  },
+  {
+    "site": "www.colehaan.com",
+    "source": "D:\\pythonProject\\work\\colehaan\\url.json",
+    "category_count": 96,
+    "collection_urls": 96
+  },
+  {
+    "site": "corelle.com",
+    "source": "D:\\pythonProject\\work\\corelle\\url.json",
+    "category_count": 15,
+    "collection_urls": 15
+  },
+  {
+    "site": "corkcicle.com",
+    "source": "D:\\pythonProject\\work\\corkcicle\\url.json",
+    "category_count": 92,
+    "collection_urls": 56
+  },
+  {
+    "site": "cozyearth.com",
+    "source": "D:\\pythonProject\\work\\cozyearth\\url.json",
+    "category_count": 139,
+    "collection_urls": 118
+  },
+  {
+    "site": "us.crzyoga.com",
+    "source": "D:\\pythonProject\\work\\crzyoga\\url.json",
+    "category_count": 103,
+    "collection_urls": 99
+  },
+  {
+    "site": "www.cushionaire.com",
+    "source": "D:\\pythonProject\\work\\cushionaire\\url.json",
+    "category_count": 42,
+    "collection_urls": 42
+  },
+  {
+    "site": "www.dagnedover.com",
+    "source": "D:\\pythonProject\\work\\dagnedover\\url.json",
+    "category_count": 26,
+    "collection_urls": 24
+  },
+  {
+    "site": "danessamyricksbeauty.com",
+    "source": "D:\\pythonProject\\work\\danessamyricksbeauty\\url.json",
+    "category_count": 38,
+    "collection_urls": 37
+  },
+  {
+    "site": "darntough.com",
+    "source": "D:\\pythonProject\\work\\darntough\\url.json",
+    "category_count": 125,
+    "collection_urls": 109
+  },
+  {
+    "site": "davids-usa.com",
+    "source": "D:\\pythonProject\\work\\davids\\url.json",
+    "category_count": 13,
+    "collection_urls": 10
+  },
+  {
+    "site": "www.deathwishcoffee.com",
+    "source": "D:\\pythonProject\\work\\deathwishcoffee\\url.json",
+    "category_count": 36,
+    "collection_urls": 29
+  },
+  {
+    "site": "www.doona.com",
+    "source": "D:\\pythonProject\\work\\doona\\url.json",
+    "category_count": 32,
+    "collection_urls": 5
+  },
+  {
+    "site": "drift.co",
+    "source": "D:\\pythonProject\\work\\drift\\url.json",
+    "category_count": 5,
+    "collection_urls": 5
+  },
+  {
+    "site": "www.drinkhint.com",
+    "source": "D:\\pythonProject\\work\\drinkhint\\url.json",
+    "category_count": 8,
+    "collection_urls": 8
+  },
+  {
+    "site": "drinkolipop.com",
+    "source": "D:\\pythonProject\\work\\drinkolipop\\url.json",
+    "category_count": 7,
+    "collection_urls": 7
+  },
+  {
+    "site": "www.drmtlgy.com",
+    "source": "D:\\pythonProject\\work\\drmtlgy\\url.json",
+    "category_count": 46,
+    "collection_urls": 46
+  },
+  {
+    "site": "www.drscholls.com",
+    "source": "D:\\pythonProject\\work\\drscholls\\url.json",
+    "category_count": 73,
+    "collection_urls": 42
+  },
+  {
+    "site": "eaglesnestoutfittersinc.com",
+    "source": "D:\\pythonProject\\work\\eaglesnestoutfittersinc\\url.json",
+    "category_count": 35,
+    "collection_urls": 27
+  },
+  {
+    "site": "eargasm.com",
+    "source": "D:\\pythonProject\\work\\eargasm\\url.json",
+    "category_count": 12,
+    "collection_urls": 11
+  },
+  {
+    "site": "www.earthrated.com",
+    "source": "D:\\pythonProject\\work\\earthrated\\url.json",
+    "category_count": 1,
+    "collection_urls": 1
+  },
+  {
+    "site": "www.elfcosmetics.com",
+    "source": "D:\\pythonProject\\work\\elfcosmetics\\url.json",
+    "category_count": 101,
+    "collection_urls": 9
+  },
+  {
+    "site": "enewtondesign.com",
+    "source": "D:\\pythonProject\\work\\enewtondesign\\url.json",
+    "category_count": 56,
+    "collection_urls": 56
+  },
+  {
+    "site": "essencemakeup.com",
+    "source": "D:\\pythonProject\\work\\essencemakeup\\url.json",
+    "category_count": 37,
+    "collection_urls": 37
+  },
+  {
+    "site": "evryjewels.com",
+    "source": "D:\\pythonProject\\work\\evryjewels\\url.json",
+    "category_count": 41,
+    "collection_urls": 41
+  },
+  {
+    "site": "www.explodingkittens.com",
+    "source": "D:\\pythonProject\\work\\explodingkittens\\url.json",
+    "category_count": 29,
+    "collection_urls": 29
+  },
+  {
+    "site": "feetures.com",
+    "source": "D:\\pythonProject\\work\\feetures\\url.json",
+    "category_count": 43,
+    "collection_urls": 43
+  },
+  {
+    "site": "www.firstaidbeauty.com",
+    "source": "D:\\pythonProject\\work\\firstaidbeauty\\url.json",
+    "category_count": 25,
+    "collection_urls": 25
+  },
+  {
+    "site": "us.gardena.com",
+    "source": "D:\\pythonProject\\work\\gardena\\url.json",
+    "category_count": 12,
+    "collection_urls": 12
+  },
+  {
+    "site": "gisou.com",
+    "source": "D:\\pythonProject\\work\\gisou\\url.json",
+    "category_count": 10,
+    "collection_urls": 10
+  },
+  {
+    "site": "www.glamnetic.com",
+    "source": "D:\\pythonProject\\work\\glamnetic\\url.json",
+    "category_count": 101,
+    "collection_urls": 96
+  },
+  {
+    "site": "www.glowrecipe.com",
+    "source": "D:\\pythonProject\\work\\glowrecipe\\url.json",
+    "category_count": 45,
+    "collection_urls": 40
+  },
+  {
+    "site": "goodr.com",
+    "source": "D:\\pythonProject\\work\\goodr\\url.json",
+    "category_count": 45,
+    "collection_urls": 45
+  },
+  {
+    "site": "www.gorjana.com",
+    "source": "D:\\pythonProject\\work\\gorjana\\url.json",
+    "category_count": 106,
+    "collection_urls": 106
+  },
+  {
+    "site": "guardianbikes.com",
+    "source": "D:\\pythonProject\\work\\guardianbikes\\url.json",
+    "category_count": 5,
+    "collection_urls": 5
+  },
+  {
+    "site": "gurunanda.com",
+    "source": "D:\\pythonProject\\work\\gurunanda\\url.json",
+    "category_count": 22,
+    "collection_urls": 20
+  },
+  {
+    "site": "www.harney.com",
+    "source": "D:\\pythonProject\\work\\harney\\url.json",
+    "category_count": 49,
+    "collection_urls": 38
+  },
+  {
+    "site": "www.havaianas.com",
+    "source": "D:\\pythonProject\\work\\havaianas\\url.json",
+    "category_count": 5,
+    "collection_urls": 4
+  },
+  {
+    "site": "herfantasybox.com",
+    "source": "D:\\pythonProject\\work\\herfantasybox\\url.json",
+    "category_count": 9,
+    "collection_urls": 8
+  },
+  {
+    "site": "himalayausa.com",
+    "source": "D:\\pythonProject\\work\\himalayausa\\url.json",
+    "category_count": 66,
+    "collection_urls": 66
+  },
+  {
+    "site": "www.hydroflask.com",
+    "source": "D:\\pythonProject\\work\\hydroflask\\url.json",
+    "category_count": 47,
+    "collection_urls": 4
+  },
+  {
+    "site": "www.igloocoolers.com",
+    "source": "D:\\pythonProject\\work\\igloocoolers\\url.json",
+    "category_count": 62,
+    "collection_urls": 60
+  },
+  {
+    "site": "www.impressbeauty.com",
+    "source": "D:\\pythonProject\\work\\impressbeauty\\url.json",
+    "category_count": 49,
+    "collection_urls": 44
+  },
+  {
+    "site": "iniushop.com",
+    "source": "D:\\pythonProject\\work\\iniushop\\url.json",
+    "category_count": 21,
+    "collection_urls": 21
+  },
+  {
+    "site": "jaxxon.com",
+    "source": "D:\\pythonProject\\work\\jaxxon\\url.json",
+    "category_count": 45,
+    "collection_urls": 45
+  },
+  {
+    "site": "www.jonesroadbeauty.com",
+    "source": "D:\\pythonProject\\work\\jonesroadbeauty\\url.json",
+    "category_count": 11,
+    "collection_urls": 11
+  },
+  {
+    "site": "www.k18hair.com",
+    "source": "D:\\pythonProject\\work\\k18hair\\url.json",
+    "category_count": 15,
+    "collection_urls": 5
+  },
+  {
+    "site": "www.keenfootwear.com",
+    "source": "D:\\pythonProject\\work\\keenfootwear\\url.json",
+    "category_count": 118,
+    "collection_urls": 118
+  },
+  {
+    "site": "khpet.com",
+    "source": "D:\\pythonProject\\work\\khpet\\url.json",
+    "category_count": 32,
+    "collection_urls": 32
+  },
+  {
+    "site": "kizik.com",
+    "source": "D:\\pythonProject\\work\\kizik\\url.json",
+    "category_count": 31,
+    "collection_urls": 29
+  },
+  {
+    "site": "knix.com",
+    "source": "D:\\pythonProject\\work\\knix\\url.json",
+    "category_count": 116,
+    "collection_urls": 64
+  },
+  {
+    "site": "us.laneige.com",
+    "source": "D:\\pythonProject\\work\\laneige\\url.json",
+    "category_count": 30,
+    "collection_urls": 30
+  },
+  {
+    "site": "lanolips.com",
+    "source": "D:\\pythonProject\\work\\lanolips\\url.json",
+    "category_count": 38,
+    "collection_urls": 30
+  },
+  {
+    "site": "www.lauramercier.com",
+    "source": "D:\\pythonProject\\work\\lauramercier\\url.json",
+    "category_count": 61,
+    "collection_urls": 54
+  },
+  {
+    "site": "www.leatherman.com",
+    "source": "D:\\pythonProject\\work\\leatherman\\url.json",
+    "category_count": 40,
+    "collection_urls": 40
+  },
+  {
+    "site": "lolablankets.com",
+    "source": "D:\\pythonProject\\work\\lolablankets\\url.json",
+    "category_count": 24,
+    "collection_urls": 22
+  },
+  {
+    "site": "www.longchamp.com",
+    "source": "D:\\pythonProject\\work\\longchamp\\url.json",
+    "category_count": 162,
+    "collection_urls": 3
+  },
+  {
+    "site": "loveamika.com",
+    "source": "D:\\pythonProject\\work\\loveamika\\url.json",
+    "category_count": 56,
+    "collection_urls": 53
+  },
+  {
+    "site": "lumedeodorant.com",
+    "source": "D:\\pythonProject\\work\\lumedeodorant\\url.json",
+    "category_count": 27,
+    "collection_urls": 25
+  },
+  {
+    "site": "www.melissaanddoug.com",
+    "source": "D:\\pythonProject\\work\\melissaanddoug\\url.json",
+    "category_count": 63,
+    "collection_urls": 61
+  },
+  {
+    "site": "www.mirai-skin.com",
+    "source": "D:\\pythonProject\\work\\mirai-skin\\url.json",
+    "category_count": 103,
+    "collection_urls": 98
+  },
+  {
+    "site": "mondayswimwear.com",
+    "source": "D:\\pythonProject\\work\\mondayswimwear\\url.json",
+    "category_count": 34,
+    "collection_urls": 31
+  },
+  {
+    "site": "www.morphe.com",
+    "source": "D:\\pythonProject\\work\\morphe\\url.json",
+    "category_count": 21,
+    "collection_urls": 21
+  },
+  {
+    "site": "mrsmeyers.com",
+    "source": "D:\\pythonProject\\work\\mrsmeyers\\url.json",
+    "category_count": 26,
+    "collection_urls": 25
+  },
+  {
+    "site": "www.mykitsch.com",
+    "source": "D:\\pythonProject\\work\\mykitsch\\url.json",
+    "category_count": 69,
+    "collection_urls": 62
+  },
+  {
+    "site": "naturium.com",
+    "source": "D:\\pythonProject\\work\\naturium\\url.json",
+    "category_count": 61,
+    "collection_urls": 47
+  },
+  {
+    "site": "necessaire.com",
+    "source": "D:\\pythonProject\\work\\necessaire\\url.json",
+    "category_count": 30,
+    "collection_urls": 28
+  },
+  {
+    "site": "nodpod.com",
+    "source": "D:\\pythonProject\\work\\nodpod\\url.json",
+    "category_count": 1,
+    "collection_urls": 1
+  },
+  {
+    "site": "obozfootwear.com",
+    "source": "D:\\pythonProject\\work\\obozfootwear\\url.json",
+    "category_count": 52,
+    "collection_urls": 52
+  },
+  {
+    "site": "www.onecompress.com",
+    "source": "D:\\pythonProject\\work\\onecompress\\url.json",
+    "category_count": 1,
+    "collection_urls": 1
+  },
+  {
+    "site": "openfarmpet.com",
+    "source": "D:\\pythonProject\\work\\openfarmpet\\url.json",
+    "category_count": 89,
+    "collection_urls": 79
+  },
+  {
+    "site": "www.orbitonline.com",
+    "source": "D:\\pythonProject\\work\\orbitonline\\url.json",
+    "category_count": 28,
+    "collection_urls": 27
+  },
+  {
+    "site": "www.oreo.com",
+    "source": "D:\\pythonProject\\work\\oreo\\url.json",
+    "category_count": 19,
+    "collection_urls": 7
+  },
+  {
+    "site": "www.orthofeet.com",
+    "source": "D:\\pythonProject\\work\\orthofeet\\url.json",
+    "category_count": 133,
+    "collection_urls": 110
+  },
+  {
+    "site": "www.orthofeet.com",
+    "source": "D:\\pythonProject\\work\\otterbox\\url.json",
+    "category_count": 147,
+    "collection_urls": 140
+  },
+  {
+    "site": "owalalife.com",
+    "source": "D:\\pythonProject\\work\\owalalife\\url.json",
+    "category_count": 42,
+    "collection_urls": 19
+  },
+  {
+    "site": "palmers.com",
+    "source": "D:\\pythonProject\\work\\palmers\\url.json",
+    "category_count": 49,
+    "collection_urls": 49
+  },
+  {
+    "site": "us.pandora.net",
+    "source": "D:\\pythonProject\\work\\pandora\\url.json",
+    "category_count": 203,
+    "collection_urls": 44
+  },
+  {
+    "site": "patternbeauty.com",
+    "source": "D:\\pythonProject\\work\\patternbeauty\\url.json",
+    "category_count": 22,
+    "collection_urls": 22
+  },
+  {
+    "site": "perfectsnacks.com",
+    "source": "D:\\pythonProject\\work\\perfectsnacks\\url.json",
+    "category_count": 8,
+    "collection_urls": 7
+  },
+  {
+    "site": "www.petsense.com",
+    "source": "D:\\pythonProject\\work\\petsense\\url.json",
+    "category_count": 64,
+    "collection_urls": 64
+  },
+  {
+    "site": "usa.pioneer",
+    "source": "D:\\pythonProject\\work\\pioneer\\url.json",
+    "category_count": 6,
+    "collection_urls": 6
+  },
+  {
+    "site": "www.planttherapy.com",
+    "source": "D:\\pythonProject\\work\\planttherapy\\url.json",
+    "category_count": 52,
+    "collection_urls": 49
+  },
+  {
+    "site": "www.portlandleathergoods.com",
+    "source": "D:\\pythonProject\\work\\portlandleathergoods\\url.json",
+    "category_count": 35,
+    "collection_urls": 35
+  },
+  {
+    "site": "pourri.com",
+    "source": "D:\\pythonProject\\work\\pourri\\url.json",
+    "category_count": 17,
+    "collection_urls": 15
+  },
+  {
+    "site": "www.premieryarns.com",
+    "source": "D:\\pythonProject\\work\\premieryarns\\url.json",
+    "category_count": 208,
+    "collection_urls": 208
+  },
+  {
+    "site": "www.primalkitchen.com",
+    "source": "D:\\pythonProject\\work\\primalkitchen\\url.json",
+    "category_count": 27,
+    "collection_urls": 27
+  },
+  {
+    "site": "pyrexhome.com",
+    "source": "D:\\pythonProject\\work\\pyrexhome\\url.json",
+    "category_count": 10,
+    "collection_urls": 10
+  },
+  {
+    "site": "www.quay.com",
+    "source": "D:\\pythonProject\\work\\quay\\url.json",
+    "category_count": 23,
+    "collection_urls": 23
+  },
+  {
+    "site": "www.redken.com",
+    "source": "D:\\pythonProject\\work\\redken\\url.json",
+    "category_count": 70,
+    "collection_urls": 1
+  },
+  {
+    "site": "www.redtoolstore.com",
+    "source": "D:\\pythonProject\\work\\redtoolstore\\url.json",
+    "category_count": 253,
+    "collection_urls": 253
+  },
+  {
+    "site": "www.reef.com",
+    "source": "D:\\pythonProject\\work\\reef\\url.json",
+    "category_count": 121,
+    "collection_urls": 121
+  },
+  {
+    "site": "rhoback.com",
+    "source": "D:\\pythonProject\\work\\rhoback\\url.json",
+    "category_count": 76,
+    "collection_urls": 74
+  },
+  {
+    "site": "www.rhodeskin.com",
+    "source": "D:\\pythonProject\\work\\rhodeskin\\url.json",
+    "category_count": 5,
+    "collection_urls": 5
+  },
+  {
+    "site": "www.rishi-tea.com",
+    "source": "D:\\pythonProject\\work\\rishi-tea\\url.json",
+    "category_count": 72,
+    "collection_urls": 71
+  },
+  {
+    "site": "rothys.com",
+    "source": "D:\\pythonProject\\work\\rothys\\url.json",
+    "category_count": 59,
+    "collection_urls": 52
+  },
+  {
+    "site": "rysesupps.com",
+    "source": "D:\\pythonProject\\work\\rysesupps\\url.json",
+    "category_count": 10,
+    "collection_urls": 10
+  },
+  {
+    "site": "sanuk.com",
+    "source": "D:\\pythonProject\\work\\sanuk\\url.json",
+    "category_count": 40,
+    "collection_urls": 39
+  },
+  {
+    "site": "secretlab.co",
+    "source": "D:\\pythonProject\\work\\secretlab\\url.json",
+    "category_count": 54,
+    "collection_urls": 43
+  },
+  {
+    "site": "shokz.com",
+    "source": "D:\\pythonProject\\work\\shokz\\url.json",
+    "category_count": 3,
+    "collection_urls": 3
+  },
+  {
+    "site": "shop.kingarthurbaking.com",
+    "source": "D:\\pythonProject\\work\\shop.kingarthurbaking\\url.json",
+    "category_count": 122,
+    "collection_urls": 17
+  },
+  {
+    "site": "shopvitality.com",
+    "source": "D:\\pythonProject\\work\\shopvitality\\url.json",
+    "category_count": 67,
+    "collection_urls": 67
+  },
+  {
+    "site": "www.simplemodern.com",
+    "source": "D:\\pythonProject\\work\\simplemodern\\url.json",
+    "category_count": 52,
+    "collection_urls": 51
+  },
+  {
+    "site": "skims.com",
+    "source": "D:\\pythonProject\\work\\skims\\url.json",
+    "category_count": 107,
+    "collection_urls": 99
+  },
+  {
+    "site": "www.smithoptics.com",
+    "source": "D:\\pythonProject\\work\\smithoptics\\url.json",
+    "category_count": 86,
+    "collection_urls": 76
+  },
+  {
+    "site": "sodastream.com",
+    "source": "D:\\pythonProject\\work\\sodastream\\url.json",
+    "category_count": 3,
+    "collection_urls": 3
+  },
+  {
+    "site": "sonnyangelusa.com",
+    "source": "D:\\pythonProject\\work\\sonnyangelusa\\url.json",
+    "category_count": 11,
+    "collection_urls": 11
+  },
+  {
+    "site": "www.sparkpaws.com",
+    "source": "D:\\pythonProject\\work\\sparkpaws\\url.json",
+    "category_count": 21,
+    "collection_urls": 21
+  },
+  {
+    "site": "www.sperry.com",
+    "source": "D:\\pythonProject\\work\\sperry\\url.json",
+    "category_count": 108,
+    "collection_urls": 108
+  },
+  {
+    "site": "starface.world",
+    "source": "D:\\pythonProject\\work\\starface\\url.json",
+    "category_count": 5,
+    "collection_urls": 5
+  },
+  {
+    "site": "summerfridays.com",
+    "source": "D:\\pythonProject\\work\\summerfridays\\url.json",
+    "category_count": 20,
+    "collection_urls": 18
+  },
+  {
+    "site": "www.sunbum.com",
+    "source": "D:\\pythonProject\\work\\sunbum\\url.json",
+    "category_count": 32,
+    "collection_urls": 30
+  },
+  {
+    "site": "supergoop.com",
+    "source": "D:\\pythonProject\\work\\supergoop\\url.json",
+    "category_count": 30,
+    "collection_urls": 23
+  },
+  {
+    "site": "tartecosmetics.com",
+    "source": "D:\\pythonProject\\work\\tartecosmetics\\url.json",
+    "category_count": 27,
+    "collection_urls": 27
+  },
+  {
+    "site": "www.teleties.com",
+    "source": "D:\\pythonProject\\work\\teleties\\url.json",
+    "category_count": 55,
+    "collection_urls": 54
+  },
+  {
+    "site": "thebeast.com",
+    "source": "D:\\pythonProject\\work\\thebeast\\url.json",
+    "category_count": 14,
+    "collection_urls": 8
+  },
+  {
+    "site": "thecloudies.com",
+    "source": "D:\\pythonProject\\work\\thecloudies\\url.json",
+    "category_count": 3,
+    "collection_urls": 3
+  },
+  {
+    "site": "thecushionlab.com",
+    "source": "D:\\pythonProject\\work\\thecushionlab\\url.json",
+    "category_count": 6,
+    "collection_urls": 6
+  },
+  {
+    "site": "thefitville.com",
+    "source": "D:\\pythonProject\\work\\thefitville\\url.json",
+    "category_count": 92,
+    "collection_urls": 91
+  },
+  {
+    "site": "www.thehydrojug.com",
+    "source": "D:\\pythonProject\\work\\thehydrojug\\url.json",
+    "category_count": 25,
+    "collection_urls": 25
+  },
+  {
+    "site": "www.theisopurecompany.com",
+    "source": "D:\\pythonProject\\work\\theisopurecompany\\url.json",
+    "category_count": 15,
+    "collection_urls": 9
+  },
+  {
+    "site": "www.therabody.com",
+    "source": "D:\\pythonProject\\work\\therabody\\url.json",
+    "category_count": 30,
+    "collection_urls": 4
+  },
+  {
+    "site": "www.thirdlove.com",
+    "source": "D:\\pythonProject\\work\\thirdlove\\url.json",
+    "category_count": 54,
+    "collection_urls": 54
+  },
+  {
+    "site": "us.tonies.com",
+    "source": "D:\\pythonProject\\work\\tonies\\url.json",
+    "category_count": 78,
+    "collection_urls": 59
+  },
+  {
+    "site": "touchland.com",
+    "source": "D:\\pythonProject\\work\\touchland\\url.json",
+    "category_count": 7,
+    "collection_urls": 7
+  },
+  {
+    "site": "www.tower28beauty.com",
+    "source": "D:\\pythonProject\\work\\tower28beauty\\url.json",
+    "category_count": 18,
+    "collection_urls": 18
+  },
+  {
+    "site": "travismathew.com",
+    "source": "D:\\pythonProject\\work\\travismathew\\url.json",
+    "category_count": 181,
+    "collection_urls": 177
+  },
+  {
+    "site": "www.umbra.com",
+    "source": "D:\\pythonProject\\work\\umbra\\url.json",
+    "category_count": 38,
+    "collection_urls": 37
+  },
+  {
+    "site": "uprootclean.com",
+    "source": "D:\\pythonProject\\work\\uprootclean\\url.json",
+    "category_count": 7,
+    "collection_urls": 7
+  },
+  {
+    "site": "us.targus.com",
+    "source": "D:\\pythonProject\\work\\us.targus\\url.json",
+    "category_count": 80,
+    "collection_urls": 79
+  },
+  {
+    "site": "us.yotoplay.com",
+    "source": "D:\\pythonProject\\work\\us.yotoplay\\url.json",
+    "category_count": 24,
+    "collection_urls": 3
+  },
+  {
+    "site": "velvetcaviar.com",
+    "source": "D:\\pythonProject\\work\\velvetcaviar\\url.json",
+    "category_count": 178,
+    "collection_urls": 178
+  },
+  {
+    "site": "vuoriclothing.com",
+    "source": "D:\\pythonProject\\work\\vuoriclothing\\url.json",
+    "category_count": 88,
+    "collection_urls": 85
+  },
+  {
+    "site": "www.wetnwildbeauty.com",
+    "source": "D:\\pythonProject\\work\\wetnwildbeauty\\url.json",
+    "category_count": 34,
+    "collection_urls": 34
+  },
+  {
+    "site": "www.wilson.com",
+    "source": "D:\\pythonProject\\work\\wilson\\url.json",
+    "category_count": 253,
+    "collection_urls": 38
+  },
+  {
+    "site": "www.woodcraft.com",
+    "source": "D:\\pythonProject\\work\\woodcraft\\url.json",
+    "category_count": 43,
+    "collection_urls": 42
+  },
+  {
+    "site": "xeroshoes.com",
+    "source": "D:\\pythonProject\\work\\xeroshoes\\url.json",
+    "category_count": 52,
+    "collection_urls": 51
+  },
+  {
+    "site": "us.yonex.com",
+    "source": "D:\\pythonProject\\work\\yonex\\url.json",
+    "category_count": 97,
+    "collection_urls": 90
+  },
+  {
+    "site": "beistravel.com",
+    "source": "D:\\pythonProject\\work\\工具\\url.json",
+    "category_count": 154,
+    "collection_urls": 89
+  }
+]

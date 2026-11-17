@@ -1,0 +1,180 @@
+{
+  "status": "completed_with_one_external_access_block",
+  "platform": "http://127.0.0.1:8880",
+  "unit_tests": {
+    "passed": 187,
+    "total": 187,
+    "log": "practical-unittest-complete.log"
+  },
+  "historical_replay": {
+    "passed": 10,
+    "total": 10,
+    "log": "practical-replay-acceptance.log"
+  },
+  "manual_ui": "tests/manual_scope_browser.py passed; rename/deselect/add/confirm; exports/practical-manual-ui.png",
+  "navigation_passed": 6,
+  "platform_passed": 5,
+  "total": 6,
+  "success_rate": 0.8333333333333334,
+  "scope": "default auto: observed menu + flat public collection inventory, representative HTTP checks, one complete selected listing, first three real products, validation and independent ZIP; not full-store product scrape",
+  "warnings_policy": "Menu/visual/auxiliary inventory uncertainty warns. Market mismatch, actual access blockage, empty data and source identity/variant/price errors remain blocking. Source tampering is rejected.",
+  "timing_caveat": "No guarantee of 0.3-second inventory or 60-second package; actual measured times below.",
+  "inventory_caveat": "Counts include flat source-labelled feed/sitemap additions, not recovered original menu counts. Bounded/unavailable sitemap fragments remain warnings; not a full-menu completeness guarantee.",
+  "history": {
+    "original_five": "runs/shopify-five-fontfix-20261114/summary.json",
+    "timeout600": "runs/shopify-timeout600-20261114/summary.json",
+    "practical_first": "runs/shopify-six-practical-20261114/summary.json",
+    "practical_first_not_final_reason": "Initial output review found foreign locale sitemap rows and a Menu Close copy; corrected before final cohort.",
+    "practical_cohort": "runs/shopify-six-practical-v2-20261114/summary.json",
+    "supergoop_retry": "runs/shopify-practical-supergoop-retry-20261114/summary.json",
+    "supergoop_prior_success": "runs/10a8672a90a6c1d3/report.json; historical only, not substituted for latest blocked attempt"
+  },
+  "results": [
+    {
+      "name": "iniu",
+      "site": "https://iniushop.com/",
+      "job_id": "e1b3acfdf88e1031",
+      "status": "completed",
+      "categories": 72,
+      "seconds": 73.921,
+      "navigation_ai_seconds": 0,
+      "visual_ai_seconds": 0,
+      "inventory_seconds": 8.578,
+      "target_validation_seconds": 9.44,
+      "error": null,
+      "auto_pruned_roots": [],
+      "sources": {
+        "observed_menu": 31,
+        "collections_feed_fallback": 41
+      },
+      "products": 3,
+      "variants": 21,
+      "json": "exports\\practical-six-20261114\\iniu\\url.json",
+      "zip": "runs\\e1b3acfdf88e1031\\crawler.zip",
+      "independent_verification": true
+    },
+    {
+      "name": "touchland",
+      "site": "https://touchland.com/",
+      "job_id": "bc87aa7833ba4d3e",
+      "status": "completed",
+      "categories": 56,
+      "seconds": 75.165,
+      "navigation_ai_seconds": 0,
+      "visual_ai_seconds": 0,
+      "inventory_seconds": 5.031,
+      "target_validation_seconds": 9.345,
+      "error": null,
+      "auto_pruned_roots": [
+        "Menu Close",
+        "Mobile Menu"
+      ],
+      "sources": {
+        "observed_menu": 4,
+        "collections_feed_fallback": 52
+      },
+      "products": 3,
+      "variants": 3,
+      "json": "exports\\practical-six-20261114\\touchland\\url.json",
+      "zip": "runs\\bc87aa7833ba4d3e\\crawler.zip",
+      "independent_verification": true
+    },
+    {
+      "name": "simplemodern",
+      "site": "https://www.simplemodern.com/",
+      "job_id": "c1383c6cd5a119a0",
+      "status": "completed",
+      "categories": 725,
+      "seconds": 44.217,
+      "navigation_ai_seconds": 0,
+      "visual_ai_seconds": 0,
+      "inventory_seconds": 7.547,
+      "target_validation_seconds": 8.542,
+      "error": null,
+      "auto_pruned_roots": [],
+      "sources": {
+        "observed_menu": 72,
+        "collections_feed_fallback": 653
+      },
+      "products": 3,
+      "variants": 3,
+      "json": "exports\\practical-six-20261114\\simplemodern\\url.json",
+      "zip": "runs\\c1383c6cd5a119a0\\crawler.zip",
+      "independent_verification": true
+    },
+    {
+      "name": "sunbum",
+      "site": "https://www.sunbum.com/",
+      "job_id": "dfc742ba3880c43c",
+      "status": "completed",
+      "categories": 103,
+      "seconds": 97.362,
+      "navigation_ai_seconds": 0,
+      "visual_ai_seconds": 0,
+      "inventory_seconds": 6.453,
+      "target_validation_seconds": 8.225,
+      "error": null,
+      "auto_pruned_roots": [],
+      "sources": {
+        "observed_menu": 31,
+        "collections_feed_fallback": 72
+      },
+      "products": 3,
+      "variants": 3,
+      "json": "exports\\practical-six-20261114\\sunbum\\url.json",
+      "zip": "runs\\dfc742ba3880c43c\\crawler.zip",
+      "independent_verification": true
+    },
+    {
+      "name": "supergoop",
+      "site": "https://supergoop.com/",
+      "job_id": "02e209fcf5f70214",
+      "status": "failed",
+      "categories": 53,
+      "seconds": 53.726,
+      "navigation_ai_seconds": 0,
+      "visual_ai_seconds": 0,
+      "inventory_seconds": 5.328,
+      "target_validation_seconds": 5.302,
+      "error": "Page.goto: Timeout 25000ms exceeded.\nCall log:\n  - navigating to \"https://supergoop.com/\", waiting until \"domcontentloaded\"\n",
+      "auto_pruned_roots": [],
+      "sources": {
+        "observed_menu": 3,
+        "collections_feed_fallback": 50
+      },
+      "products": 0,
+      "variants": 0,
+      "json": "exports\\practical-six-20261114\\supergoop\\navigation-only-url.json",
+      "zip": null,
+      "independent_verification": false,
+      "access_diagnostic": "supergoop-access-diagnostic.json",
+      "failure_class": "public_product_json_403_then_browser_recovery_timeout"
+    },
+    {
+      "name": "allbirds",
+      "site": "https://www.allbirds.com/",
+      "job_id": "7e27f298425f6e60",
+      "status": "completed",
+      "categories": 565,
+      "seconds": 82.876,
+      "navigation_ai_seconds": 0,
+      "visual_ai_seconds": 0,
+      "inventory_seconds": 9.14,
+      "target_validation_seconds": 5.689,
+      "error": null,
+      "auto_pruned_roots": [
+        "Men",
+        "Mobile Menu"
+      ],
+      "sources": {
+        "static_flat_fallback": 39,
+        "collections_feed_fallback": 526
+      },
+      "products": 3,
+      "variants": 39,
+      "json": "exports\\practical-six-20261114\\allbirds\\url.json",
+      "zip": "runs\\7e27f298425f6e60\\crawler.zip",
+      "independent_verification": true
+    }
+  ]
+}

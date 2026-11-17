@@ -1,0 +1,247 @@
+{
+  "generated_at": "2026-11-14T04:31:30.822107",
+  "all_tested_websites_passed": false,
+  "local_candidate_count": 172,
+  "candidate_count_is_not_online_pass_count": true,
+  "unit_tests": {
+    "passed": true,
+    "count": 129,
+    "command": "python -m unittest discover -s tests"
+  },
+  "historical_navigation_replay": [
+    {
+      "site": "jonesroadbeauty.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 7
+    },
+    {
+      "site": "k18hair.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 4
+    },
+    {
+      "site": "knix.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 78
+    },
+    {
+      "site": "kosas.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 15
+    },
+    {
+      "site": "kytebaby.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 115
+    },
+    {
+      "site": "lauramercier.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 13
+    },
+    {
+      "site": "leatherman.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 58
+    },
+    {
+      "site": "lolablankets.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 22
+    },
+    {
+      "site": "magnatiles.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 27
+    },
+    {
+      "site": "maryruthorganics.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 35
+    }
+  ],
+  "ui": {
+    "passed": true,
+    "full_mode_excludes_manual": true,
+    "submitted_full_flag": true,
+    "page_errors": []
+  },
+  "platform": {
+    "passed": true,
+    "url": "http://127.0.0.1:8878",
+    "full_mode_visible": true,
+    "full_manual_conflict_http": 400,
+    "conflict_response": "{\"error\": \"全自动全量模式不能同时启用手动确认\"}",
+    "runtime_compile_passed": true,
+    "original_server_8773_preserved": true
+  },
+  "live_passed_cases": [
+    {
+      "site": "jonesroadbeauty.com",
+      "passed": true,
+      "scope": "all_products",
+      "validation": {
+        "products": 91,
+        "variants": 422,
+        "passed": true,
+        "categories": 7,
+        "sampled_categories": 7,
+        "seconds": 3.437
+      },
+      "unique_directory_targets": 7,
+      "zip_offline_verified": true,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\shopify-acceptance-20261114-041047\\jonesroadbeauty.com",
+      "navigation_version": "4cf096689402cc5b0b46e2dbd2ae22fb3a241152c49af77efe0a715db3ed450f"
+    },
+    {
+      "site": "k18hair.com",
+      "passed": true,
+      "scope": "all_products",
+      "validation": {
+        "products": 28,
+        "variants": 28,
+        "passed": true,
+        "categories": 4,
+        "sampled_categories": 4,
+        "seconds": 1.9438
+      },
+      "unique_directory_targets": 4,
+      "zip_offline_verified": true,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\shopify-acceptance-20261114-041710\\k18hair.com",
+      "navigation_version": "c9576d0da4c925891621c9ef51fd6dd5f3fb9af33fb79b1eb6383e32b8e9115f"
+    },
+    {
+      "site": "explodingkittens.com",
+      "passed": true,
+      "scope": "first_3_products",
+      "validation": {
+        "products": 3,
+        "variants": 3,
+        "passed": true,
+        "categories": 18,
+        "sampled_categories": 1,
+        "seconds": 0.5042
+      },
+      "unique_directory_targets": 17,
+      "zip_offline_verified": true,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\shopify-acceptance-20261114-041405\\explodingkittens.com",
+      "navigation_version": "9c9c6bd8ab9553f456664fbef0d866f380dab33680f3ab064c5dca6a6f653f14"
+    },
+    {
+      "site": "lolablankets.com",
+      "passed": true,
+      "scope": "first_3_products",
+      "validation": {
+        "products": 3,
+        "variants": 12,
+        "passed": true,
+        "categories": 22,
+        "sampled_categories": 1,
+        "seconds": 3.2448
+      },
+      "unique_directory_targets": 20,
+      "zip_offline_verified": true,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\shopify-acceptance-20261114-042620\\lolablankets.com",
+      "navigation_version": "ed85ae750695334fa95cbb012af2909e2da7fada2d8671bcba524d8a328453a0"
+    },
+    {
+      "site": "maryruthorganics.com",
+      "passed": true,
+      "scope": "navigation_only",
+      "categories": 35,
+      "unique_directory_targets": 32,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\maryruth-framework-live"
+    }
+  ],
+  "last_live_blocked_cases": [
+    {
+      "site": "leatherman.com",
+      "passed": false,
+      "scope": "last_live_attempt",
+      "error": "目录目标验证失败 16/46: 请求失败 https://www.leatherman.com/collections/winter-sports/products.json?limit=1&page=1: HTTP Error 429: ",
+      "source": "runs/shopify-acceptance-20261114-035701/summary.json",
+      "note": "本轮后续未在线重跑，不能据离线回放宣称恢复"
+    },
+    {
+      "site": "knix.com",
+      "passed": false,
+      "scope": "last_live_attempt",
+      "error": "目录目标验证失败 48/55: 分类有商品但前端列表不可确认，需要动态列表适配",
+      "source": "runs/shopify-acceptance-20261114-035701/summary.json",
+      "note": "本轮后续未在线重跑，不能据离线回放宣称恢复"
+    }
+  ],
+  "checkpoint_no_network_replay": {
+    "passed": true,
+    "checkpoint_replay_without_network": true,
+    "zip_offline_verified": true,
+    "products": 91,
+    "variants": 422,
+    "seconds": 11.89
+  },
+  "k18_failure_and_resume": {
+    "status": "completed",
+    "site": "https://www.k18hair.com/",
+    "mode": "standard_shopify",
+    "detail_scope": "all_products",
+    "validation": {
+      "products": 28,
+      "variants": 28,
+      "passed": true,
+      "categories": 4,
+      "sampled_categories": 4,
+      "seconds": 1.9438
+    },
+    "navigation_version": "c9576d0da4c925891621c9ef51fd6dd5f3fb9af33fb79b1eb6383e32b8e9115f",
+    "resumed_from_product_checkpoint": true,
+    "previous_failed_attempt_seconds": 54.57,
+    "resume_seconds": 11.406,
+    "zip_offline_verified": true
+  },
+  "source_sha256": {
+    "app.py": "e23464783fde4451225f9c424b748eff08093386fcc2d231201e40dc10660fcf",
+    "core\\ai_runtime.py": "1628ead3a0102ac6819620239cfb176507391a4e245393674329ab3259eab697",
+    "core\\ai_worker.py": "bbdd8365de4417c120bad1287eb65152dffeea234f353db16afc68cc87ac9964",
+    "core\\common.py": "5ec84e18d225ec8e27a4d45ec57bec5cdc413bedbba99f084c559443517fed9e",
+    "core\\detector.py": "7c32acfc205c5e763116f0d73f58abe65327b3f6ae65ba17214cd3b91cbeddad",
+    "core\\hybrid_navigation.py": "5e358c77f7524ca7e05cb4ec12941fd6c6fdcd93a8c2344b02949eaccf93b6b9",
+    "core\\menu_tree.py": "84efa48015d65d5e798b44a3ed39c15c048c76bae63bce9183c25aca26a700ac",
+    "core\\navigation_ai.py": "9cb07019572783f6e96359561e8d87a7d2ae423dfaa6d78567f3e955a9349ab9",
+    "core\\navigation_browser_tool.py": "ccb160057826c112927a89e08016f2da4ae69e6f7e58256b941b059df273dfed",
+    "core\\navigation_guard.py": "9bef072dba7e0ca87fb4838bdc3bb9f5893515cb7cc6831ac70f85f909479738",
+    "core\\navigation_release.py": "03b95211632c56e4916ad343ade3748432dfc7a149c9cc0a66d5b2de2ae018af",
+    "core\\navigation_rules.py": "aa2dda86fcf648129ccd2c489f9e223c545e86de414def5cc483e5a809035ed3",
+    "core\\nav_extractor.py": "0b23484280330b880375ef215467952604679438b03511a8ea99f23b8e7c7000",
+    "core\\pipeline.py": "44158c2d10244e91dbbe48c00975be6eaab8dbcdf8bd684ff93fdf26e4274ac5",
+    "core\\shopify_fastpath.py": "39c80d541c34c4400f5116204dcc6264473f825f1199ccf5f5d954faf4e22429",
+    "core\\validator.py": "05d282c550769e25a75a6dc4fa3951520e867d2e5b233d1d304c3f95e2a2f388",
+    "core\\__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "web\\app.js": "a08130c8e75713e07f23c5c9b0b43ee5ff0c8580c5489aa06702f9738e91390a"
+  },
+  "lola_landing_saved_evidence_replay": [
+    {
+      "products": 37,
+      "variants": 127,
+      "url": "https://lolablankets.com/collections/the-lola-holiday-collection",
+      "scope": "saved_live_evidence_replay_all_cards",
+      "card_count": 37
+    },
+    {
+      "products": 27,
+      "variants": 92,
+      "url": "https://lolablankets.com/collections/westward-featuring-belmont-cameli",
+      "scope": "saved_live_evidence_replay_all_cards",
+      "card_count": 27
+    }
+  ]
+}

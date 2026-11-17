@@ -1,0 +1,15 @@
+{
+  "scope": "historical navigation replay, not live acceptance",
+  "sources": {
+    "k18hair.com": "navigation-test-20261114-020634/k18hair.com",
+    "knix.com": "navigation-test-knix-20261114-022409/knix.com",
+    "jonesroadbeauty.com": "navigation-test-20261114-020634/jonesroadbeauty.com",
+    "kosas.com": "navigation-test-kosas-20261114-024743/kosas.com",
+    "kytebaby.com": "navigation-fixed-kytebaby-20261114-030042/live",
+    "lauramercier.com": "navigation-test-lauramercier-20261114-030333/lauramercier.com",
+    "leatherman.com": "navigation-test-leatherman-20261114-030644/leatherman.com",
+    "lolablankets.com": "navigation-test-lolablankets-20261114-031659/lolablankets.com",
+    "maryruthorganics.com": "navigation-test-maryruthorganics-20261114-033854/maryruthorganics.com",
+    "magnatiles.com": "navigation-test-magnatiles-20261114-032124/magnatiles.com"
+  }
+}

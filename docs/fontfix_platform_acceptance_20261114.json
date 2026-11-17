@@ -1,0 +1,338 @@
+{
+  "status": "completed_historical",
+  "unit_tests": {
+    "passed": 164,
+    "log": "timeout-fontfix-unittest.log"
+  },
+  "historical_replay": {
+    "passed": 10,
+    "total": 10,
+    "log": "timeout-fontfix-replay.log"
+  },
+  "iniu": {
+    "job_id": "7d3db9b2e4e8e0e4",
+    "platform": "http://127.0.0.1:8880",
+    "categories": 31,
+    "result": {
+      "status": "completed",
+      "site": "https://iniushop.com/",
+      "mode": "standard_shopify",
+      "manual": false,
+      "detail_scope": "first_3_products",
+      "navigation_version": "6da92446c4115cc9ff6d3818e0040528c3ea76707f3b8051acb14de93e1347fe",
+      "seconds": 196.966,
+      "nav_seconds": 4.2982,
+      "validation": {
+        "products": 3,
+        "variants": 21,
+        "passed": true,
+        "categories": 31,
+        "sampled_categories": 1,
+        "seconds": 6.7038
+      },
+      "samples": [
+        {
+          "id": "8729554190514",
+          "title": "INIU Carry Smallest Power Bank 20000mAh 22.5W",
+          "url": "https://iniushop.com/products/iniu-carry-p512-power-bank-22-5w-smallest-20000mah",
+          "variants": 6
+        },
+        {
+          "id": "8282618036402",
+          "title": "INIU Cougar P63 Laptop Power Bank Smallest 25000mAh 100W",
+          "url": "https://iniushop.com/products/iniu-p63-e1-power-bank-smallest-100w-25000mah",
+          "variants": 8
+        },
+        {
+          "id": "8522213916850",
+          "title": "INIU Pocket Rocket Mini Power Bank 10000mAh 45W",
+          "url": "https://iniushop.com/products/new-colorful-iniu-carry-p50-e1-power-bank-45w-smallest-10000mah",
+          "variants": 7
+        }
+      ],
+      "llm_invocations": 1,
+      "directory_cli_seconds": 0,
+      "navigation_mode": "deterministic_fastpath",
+      "directory_reasoning_effort": null,
+      "directory_model": null,
+      "program_navigation_seconds": 4.203,
+      "program_confirmed_categories": 31,
+      "ai_review_categories": 0,
+      "ai_review_issues": 0,
+      "visual_status": "passed",
+      "visual_seconds": 81.546,
+      "visual_llm_invocations": 1,
+      "listing_categories": 1,
+      "listing_links": 33,
+      "first3_seconds": 30.8688,
+      "first3_cpu_seconds": 0.2835,
+      "total_seconds": 196.966
+    },
+    "json": "runs\\7d3db9b2e4e8e0e4\\url.json",
+    "independent_package_verification": {
+      "products": 3,
+      "variants": 21,
+      "passed": true,
+      "categories": 31,
+      "sampled_categories": 1,
+      "seconds": 7.8646
+    },
+    "previous_full_platform_attempt": {
+      "job_id": "8a02641bb7cf09ef",
+      "failure": {
+        "status": "failed",
+        "error": "Page.goto: Timeout 25000ms exceeded.\nCall log:\n  - navigating to \"https://iniushop.com/\", waiting until \"domcontentloaded\"\n",
+        "seconds": 188.73
+      }
+    }
+  },
+  "five_sites": {
+    "selection": "docs/shopify_five_fontfix_selection.json",
+    "results": "runs/shopify-five-fontfix-20261114/summary.json",
+    "first_attempt_only": true,
+    "initial_results": {
+      "scope": "platform: visual navigation audit + target validation + default category listing + first 3 product details + package",
+      "first_attempt_only": true,
+      "total": 5,
+      "passed": 0,
+      "success_rate": 0.0,
+      "results": [
+        {
+          "name": "touchland",
+          "source": "D:\\pythonProject\\work\\touchland\\url.json",
+          "site": "https://touchland.com/",
+          "historical_categories": 7,
+          "resolved_url": "https://touchland.com/",
+          "shopify_evidence": [
+            "shopify.theme",
+            "cdn.shopify.com",
+            "shopify.shop",
+            "shopify.currency"
+          ],
+          "job_id": "f1e842d0a19b6b59",
+          "status": "failed",
+          "seconds": 105.287,
+          "wall_seconds": 106.391,
+          "categories": 0,
+          "candidate_categories": 8,
+          "visual_status": "needs_repair",
+          "navigation_status": "blocked",
+          "error": "视觉审核未放行: needs_repair 发现 1 个移动端分组根混入候选 JSON；未发现首页可见的真实同域分类入口漏项。可见的 Body & Hair Fragrance Mist 和 Hand Sanitizer 已与菜单中的同 URL 分类对应；其余相关卡片指向产品或 pages，按规则排除。本次未核验未展开子菜单及商品详情。",
+          "report": "runs\\f1e842d0a19b6b59\\report.json",
+          "json": "runs\\f1e842d0a19b6b59\\url.json"
+        },
+        {
+          "name": "simplemodern",
+          "source": "D:\\pythonProject\\work\\simplemodern\\url.json",
+          "site": "https://www.simplemodern.com/",
+          "historical_categories": 52,
+          "resolved_url": "https://www.simplemodern.com/",
+          "shopify_evidence": [
+            "shopify.theme",
+            "cdn.shopify.com",
+            "shopify.shop",
+            "shopify.currency"
+          ],
+          "job_id": "18207665b568ac9c",
+          "status": "failed",
+          "seconds": 71.375,
+          "wall_seconds": 76.094,
+          "categories": 0,
+          "candidate_categories": 72,
+          "visual_status": "inconclusive",
+          "navigation_status": "blocked",
+          "error": "视觉审核未放行: inconclusive 截图失败、状态变化或首页覆盖不完整，无法放行视觉审核: coverage/stability check failed",
+          "report": "runs\\18207665b568ac9c\\report.json",
+          "json": "runs\\18207665b568ac9c\\url.json"
+        },
+        {
+          "name": "sunbum",
+          "source": "D:\\pythonProject\\work\\sunbum\\url.json",
+          "site": "https://www.sunbum.com/",
+          "historical_categories": 32,
+          "resolved_url": "https://www.sunbum.com/",
+          "shopify_evidence": [
+            "shopify.theme",
+            "cdn.shopify.com",
+            "shopify.shop",
+            "shopify.currency"
+          ],
+          "job_id": "d452967f112c4205",
+          "status": "failed",
+          "seconds": 337.198,
+          "wall_seconds": 338.703,
+          "categories": 0,
+          "candidate_categories": 31,
+          "visual_status": null,
+          "navigation_status": "blocked",
+          "error": "目录 CLI 会话超时，日志保留，未启动第二次会话",
+          "report": "runs\\d452967f112c4205\\report.json",
+          "json": "runs\\d452967f112c4205\\url.json"
+        },
+        {
+          "name": "supergoop",
+          "source": "D:\\pythonProject\\work\\supergoop\\url.json",
+          "site": "https://supergoop.com/",
+          "historical_categories": 30,
+          "resolved_url": "https://supergoop.com/",
+          "shopify_evidence": [
+            "shopify.theme",
+            "cdn.shopify.com",
+            "shopify.shop",
+            "shopify.currency"
+          ],
+          "job_id": "c711c89c52dc979d",
+          "status": "failed",
+          "seconds": 547.802,
+          "wall_seconds": 550.922,
+          "categories": 0,
+          "candidate_categories": 3,
+          "visual_status": null,
+          "navigation_status": "blocked",
+          "error": "目录 CLI 会话超时，日志保留，未启动第二次会话",
+          "report": "runs\\c711c89c52dc979d\\report.json",
+          "json": "runs\\c711c89c52dc979d\\url.json"
+        },
+        {
+          "name": "allbirds",
+          "source": "D:\\pythonProject\\work\\allbirds\\url.json",
+          "site": "https://www.allbirds.com/",
+          "historical_categories": 47,
+          "resolved_url": "https://www.allbirds.com/",
+          "shopify_evidence": [
+            "shopify.theme",
+            "cdn.shopify.com",
+            "shopify.shop",
+            "shopify.currency"
+          ],
+          "job_id": "d4422b45fdf70a04",
+          "status": "failed",
+          "seconds": 480.239,
+          "wall_seconds": 484.672,
+          "categories": 0,
+          "candidate_categories": 0,
+          "visual_status": null,
+          "navigation_status": "blocked",
+          "error": "目录 CLI 会话超时，日志保留，未启动第二次会话",
+          "report": "runs\\d4422b45fdf70a04\\report.json",
+          "json": "runs\\d4422b45fdf70a04\\url.json"
+        }
+      ]
+    },
+    "timeout_retest_results": "runs/shopify-timeout600-20261114/summary.json",
+    "timeout_retest_progress": [
+      {
+        "name": "supergoop",
+        "source": "D:\\pythonProject\\work\\supergoop\\url.json",
+        "site": "https://supergoop.com/",
+        "historical_categories": 30,
+        "resolved_url": "https://supergoop.com/",
+        "shopify_evidence": [
+          "shopify.theme",
+          "cdn.shopify.com",
+          "shopify.shop",
+          "shopify.currency"
+        ],
+        "job_id": "5c173aead6a0c258",
+        "status": "failed",
+        "seconds": 681.014,
+        "wall_seconds": 682.375,
+        "categories": 0,
+        "candidate_categories": 3,
+        "visual_status": null,
+        "navigation_status": "blocked",
+        "error": "目录 CLI 会话超过 600 秒上限，日志保留，未启动第二次会话",
+        "report": "runs\\5c173aead6a0c258\\report.json",
+        "json": "runs\\5c173aead6a0c258\\url.json"
+      }
+    ]
+  },
+  "navigation_timeout": {
+    "default_seconds": 600,
+    "environment": "NAVIGATION_TIMEOUT_SECONDS",
+    "visual_timeout_unchanged_seconds": 90
+  },
+  "timeout600_final_summary": {
+    "scope": "platform: visual navigation audit + target validation + default category listing + first 3 product details + package",
+    "first_attempt_only": false,
+    "retry_of": "runs/shopify-five-fontfix-20261114/summary.json",
+    "total": 3,
+    "passed": 0,
+    "success_rate": 0.0,
+    "results": [
+      {
+        "name": "sunbum",
+        "source": "D:\\pythonProject\\work\\sunbum\\url.json",
+        "site": "https://www.sunbum.com/",
+        "historical_categories": 32,
+        "resolved_url": "https://www.sunbum.com/",
+        "shopify_evidence": [
+          "shopify.theme",
+          "cdn.shopify.com",
+          "shopify.shop",
+          "shopify.currency"
+        ],
+        "job_id": "f4a2a951763e674a",
+        "status": "failed",
+        "seconds": 1281.872,
+        "wall_seconds": 1283.047,
+        "categories": 0,
+        "candidate_categories": 31,
+        "visual_status": null,
+        "navigation_status": "blocked",
+        "error": "目录 CLI 会话超过 600 秒上限，日志保留，未启动第二次会话",
+        "report": "runs\\f4a2a951763e674a\\report.json",
+        "json": "runs\\f4a2a951763e674a\\url.json"
+      },
+      {
+        "name": "supergoop",
+        "source": "D:\\pythonProject\\work\\supergoop\\url.json",
+        "site": "https://supergoop.com/",
+        "historical_categories": 30,
+        "resolved_url": "https://supergoop.com/",
+        "shopify_evidence": [
+          "shopify.theme",
+          "cdn.shopify.com",
+          "shopify.shop",
+          "shopify.currency"
+        ],
+        "job_id": "5c173aead6a0c258",
+        "status": "failed",
+        "seconds": 681.014,
+        "wall_seconds": 682.375,
+        "categories": 0,
+        "candidate_categories": 3,
+        "visual_status": null,
+        "navigation_status": "blocked",
+        "error": "目录 CLI 会话超过 600 秒上限，日志保留，未启动第二次会话",
+        "report": "runs\\5c173aead6a0c258\\report.json",
+        "json": "runs\\5c173aead6a0c258\\url.json"
+      },
+      {
+        "name": "allbirds",
+        "source": "D:\\pythonProject\\work\\allbirds\\url.json",
+        "site": "https://www.allbirds.com/",
+        "historical_categories": 47,
+        "resolved_url": "https://www.allbirds.com/",
+        "shopify_evidence": [
+          "shopify.theme",
+          "cdn.shopify.com",
+          "shopify.shop",
+          "shopify.currency"
+        ],
+        "job_id": "90581b2e9865ce91",
+        "status": "failed",
+        "seconds": 1200.731,
+        "wall_seconds": 1201.922,
+        "categories": 0,
+        "candidate_categories": 0,
+        "visual_status": null,
+        "navigation_status": "blocked",
+        "error": "目录 CLI 会话超过 600 秒上限，日志保留，未启动第二次会话",
+        "report": "runs\\90581b2e9865ce91\\report.json",
+        "json": "runs\\90581b2e9865ce91\\url.json"
+      }
+    ]
+  },
+  "superseded_by": "docs/practical_navigation_acceptance_20261114.json"
+}

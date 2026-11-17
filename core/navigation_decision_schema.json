@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {"type": "integer"},
+    "complete": {"type": "boolean"},
+    "confirmed_unchanged": {"type": "boolean"},
+    "resolved_issue_ids": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "reviewed_roots": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "summary": {"type": "string"}
+  },
+  "required": [
+    "version",
+    "complete",
+    "confirmed_unchanged",
+    "resolved_issue_ids",
+    "unresolved",
+    "reviewed_roots",
+    "summary"
+  ]
+}

@@ -1,0 +1,41 @@
+[
+  {
+    "name": "sunbum",
+    "source": "D:\\pythonProject\\work\\sunbum\\url.json",
+    "site": "https://www.sunbum.com/",
+    "historical_categories": 32,
+    "resolved_url": "https://www.sunbum.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  },
+  {
+    "name": "supergoop",
+    "source": "D:\\pythonProject\\work\\supergoop\\url.json",
+    "site": "https://supergoop.com/",
+    "historical_categories": 30,
+    "resolved_url": "https://supergoop.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  },
+  {
+    "name": "allbirds",
+    "source": "D:\\pythonProject\\work\\allbirds\\url.json",
+    "site": "https://www.allbirds.com/",
+    "historical_categories": 47,
+    "resolved_url": "https://www.allbirds.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  }
+]

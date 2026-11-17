@@ -1,0 +1,99 @@
+{
+  "audit_version": 4,
+  "unit_and_browser_tests": 41,
+  "passed": [
+    {
+      "status": "completed",
+      "site": "https://www.firstaidbeauty.com/",
+      "mode": "standard_shopify",
+      "manual": false,
+      "seconds": 25.332,
+      "nav_seconds": 16.6053,
+      "validation": {
+        "products": 3,
+        "variants": 12,
+        "passed": true,
+        "categories": 29,
+        "sampled_categories": 1,
+        "seconds": 1.9238
+      },
+      "samples": [
+        {
+          "id": "7507428081717",
+          "title": "Ultra Repair Cream Intense Hydration",
+          "url": "https://www.firstaidbeauty.com/products/ultra-repair-cream-intense-hydration",
+          "variants": 6
+        },
+        {
+          "id": "15172597612912",
+          "title": "Ultra Gentle Pure Skin Face Cleanser",
+          "url": "https://www.firstaidbeauty.com/products/ultra-gentle-pure-skin-face-cleanser",
+          "variants": 3
+        },
+        {
+          "id": "7507429294133",
+          "title": "Brighten + Glow Facial Radiance Pads with Glycolic + Lactic Acids",
+          "url": "https://www.firstaidbeauty.com/products/facial-radiance-pads-with-glycolic-lactic-acids-compostable",
+          "variants": 3
+        }
+      ],
+      "llm_invocations": 0,
+      "listing_categories": 1,
+      "listing_links": 75,
+      "first3_seconds": 0.4951,
+      "first3_cpu_seconds": 0.088,
+      "job_id": "ee20387adf07a3d9",
+      "zip_offline_verified": true
+    },
+    {
+      "status": "completed",
+      "site": "https://bruntworkwear.com/",
+      "mode": "standard_shopify",
+      "manual": false,
+      "seconds": 71.384,
+      "nav_seconds": 46.7029,
+      "validation": {
+        "products": 3,
+        "variants": 237,
+        "passed": true,
+        "categories": 53,
+        "sampled_categories": 1,
+        "seconds": 6.313
+      },
+      "samples": [
+        {
+          "id": "15391517769886",
+          "title": "The Coady Athletic Straight Leg Work Jean",
+          "url": "https://bruntworkwear.com/products/the-coady-athletic-straight-leg-work-jean",
+          "variants": 88
+        },
+        {
+          "id": "8348607512734",
+          "title": "The Marin Waterproof (Comp Toe)",
+          "url": "https://bruntworkwear.com/products/the-marin-waterproof-comp-toe",
+          "variants": 61
+        },
+        {
+          "id": "15391474319518",
+          "title": "The Coady Relaxed Bootcut Work Jean",
+          "url": "https://bruntworkwear.com/products/the-coady-relaxed-bootcut-work-jean",
+          "variants": 88
+        }
+      ],
+      "llm_invocations": 0,
+      "listing_categories": 1,
+      "listing_links": 155,
+      "first3_seconds": 1.1162,
+      "first3_cpu_seconds": 0.2787,
+      "job_id": "c7f70ccdab52feb4",
+      "zip_offline_verified": true
+    }
+  ],
+  "blocked_case": {
+    "status": "failed",
+    "error": "目录核对未通过，已停止发布目录与运行包: 菜单触发器未展开出可验证内容: Games",
+    "seconds": 11.267
+  },
+  "blocked_case_no_directory_or_zip": true,
+  "old_artifact_http_status": 409
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "site": "jonesroadbeauty.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 7
+  },
+  {
+    "site": "k18hair.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 4
+  },
+  {
+    "site": "knix.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 78
+  },
+  {
+    "site": "kosas.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 15
+  },
+  {
+    "site": "kytebaby.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 115
+  },
+  {
+    "site": "lauramercier.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 13
+  },
+  {
+    "site": "leatherman.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 58
+  },
+  {
+    "site": "lolablankets.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 22
+  },
+  {
+    "site": "magnatiles.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 27
+  },
+  {
+    "site": "maryruthorganics.com",
+    "passed": true,
+    "scope": "historical_navigation_only",
+    "categories": 35
+  }
+]

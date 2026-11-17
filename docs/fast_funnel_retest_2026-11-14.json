@@ -1,0 +1,143 @@
+{
+  "date": "2026-11-14",
+  "workflow": "three_step_fast_funnel",
+  "workbench": {
+    "listen": "0.0.0.0:8773",
+    "local_url": "http://127.0.0.1:8773",
+    "lan_url": "http://192.168.10.19:8773",
+    "deterministic_workers": 4,
+    "ai_workers": 1
+  },
+  "tests": {
+    "python_3_8_pytest": {
+      "passed": 101,
+      "failed": 0,
+      "seconds": 96.23
+    },
+    "workbench_python_3_10_unittest": {
+      "passed": 101,
+      "failed": 0,
+      "seconds": 61.268
+    }
+  },
+  "offline_static_replay": [
+    {
+      "site": "gcioutdoor.com",
+      "categories": 21,
+      "roots": 6,
+      "prepare_seconds": 2.332,
+      "browser_calls": 0,
+      "issues": 0
+    },
+    {
+      "site": "blackstoneproducts.com",
+      "categories": 31,
+      "roots": 5,
+      "prepare_seconds": 2.597,
+      "browser_calls": 0,
+      "issues": 0
+    },
+    {
+      "site": "cozyearth.com",
+      "categories": 128,
+      "roots": 5,
+      "prepare_seconds": 5.569,
+      "browser_calls": 0,
+      "issues": 0
+    },
+    {
+      "site": "www.explodingkittens.com",
+      "categories": 18,
+      "roots": 3,
+      "prepare_seconds": 1.133,
+      "browser_calls": 0,
+      "issues": 0
+    }
+  ],
+  "live_platform_runs": [
+    {
+      "id": "4392b9531707dd17",
+      "site": "https://gcioutdoor.com/",
+      "status": "completed",
+      "mode": "standard_shopify",
+      "navigation_method": "dom_tree_static",
+      "navigation_mode": "deterministic_fastpath",
+      "total_seconds": 7.351,
+      "navigation_seconds": 1.5917,
+      "program_navigation_seconds": 1.547,
+      "categories": 21,
+      "products": 3,
+      "variants": 15,
+      "llm_invocations": 0,
+      "ai_review_issues": 0,
+      "zip_offline_verified": true,
+      "zip_bytes": 678842,
+      "zip_sha256": "A1A25590CA98921166AC691C422A406BE22246C2F8A38396F7BA863C0BDA580B"
+    },
+    {
+      "id": "f636e25ac2ba1ab3",
+      "site": "https://blackstoneproducts.com/",
+      "status": "completed",
+      "mode": "standard_shopify",
+      "navigation_method": "dom_tree_static",
+      "navigation_mode": "deterministic_fastpath",
+      "total_seconds": 7.045,
+      "navigation_seconds": 1.8521,
+      "program_navigation_seconds": 1.813,
+      "categories": 31,
+      "products": 3,
+      "variants": 3,
+      "llm_invocations": 0,
+      "ai_review_issues": 0,
+      "zip_offline_verified": true,
+      "zip_bytes": 680505,
+      "zip_sha256": "D18F0891F0ABA4A167758D00001971F85B2B8BAE554FEDAD17F1B29C33BD95BD"
+    },
+    {
+      "id": "ca7edcb9eeda125d",
+      "site": "https://cozyearth.com/",
+      "selected_category": "https://cozyearth.com/collections/womens-clothing",
+      "status": "completed",
+      "mode": "standard_shopify",
+      "navigation_method": "dom_tree_static",
+      "navigation_mode": "deterministic_fastpath",
+      "total_seconds": 40.83,
+      "navigation_seconds": 4.4405,
+      "program_navigation_seconds": 4.391,
+      "categories": 128,
+      "products": 3,
+      "variants": 272,
+      "llm_invocations": 0,
+      "ai_review_issues": 0,
+      "zip_offline_verified": true,
+      "zip_bytes": 4951792,
+      "zip_sha256": "DD8366C9FDAE8FD313B61A36B87FF9A46FF73E0619B6AEF2A00E20667CF40873",
+      "note": "The default Best Sellers page reset the connection during live listing collection; the successful acceptance used the real Women menu category. Directory extraction still covered all 128 categories."
+    },
+    {
+      "id": "2b532e77380db11b",
+      "site": "https://www.explodingkittens.com/",
+      "status": "completed",
+      "mode": "standard_shopify",
+      "navigation_method": "dom_tree_static",
+      "navigation_mode": "deterministic_fastpath",
+      "total_seconds": 5.878,
+      "navigation_seconds": 1.2396,
+      "program_navigation_seconds": 1.188,
+      "categories": 18,
+      "products": 3,
+      "variants": 3,
+      "llm_invocations": 0,
+      "ai_review_issues": 0,
+      "zip_offline_verified": true,
+      "zip_bytes": 463297,
+      "zip_sha256": "9DEE5A9A1DC6159C30EA9362EC5E3EF348AD3C9B09B879343B8C67265321FCCC"
+    }
+  ],
+  "concurrency_probe": {
+    "jobs_accepted": 4,
+    "observation": "The first four-site simultaneous live probe triggered remote connection resets. The workbench accepted and ran all four jobs, but the result was not counted as site acceptance.",
+    "mitigation": "Shopify feed detection now probes menu categories sequentially and stops after the first valid feed; transient HTTP retries use bounded backoff. Final site acceptance was run sequentially to avoid conflating remote rate limits with crawler time."
+  },
+  "result": "All four final live runs completed with deterministic navigation, zero directory CLI calls, zero AI review issues, and independently verified ZIP packages. End-to-end time was 5.878 to 40.830 seconds."
+}

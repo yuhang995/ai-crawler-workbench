@@ -1,0 +1,15 @@
+[
+  {
+    "name": "supergoop",
+    "source": "D:\\pythonProject\\work\\supergoop\\url.json",
+    "site": "https://supergoop.com/",
+    "historical_categories": 30,
+    "resolved_url": "https://supergoop.com/",
+    "shopify_evidence": [
+      "shopify.theme",
+      "cdn.shopify.com",
+      "shopify.shop",
+      "shopify.currency"
+    ]
+  }
+]

@@ -1,0 +1,100 @@
+{
+  "unit_tests": {
+    "count": 135,
+    "passed": true,
+    "seconds": 56.221
+  },
+  "historical_replay": [
+    {
+      "site": "jonesroadbeauty.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 7
+    },
+    {
+      "site": "k18hair.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 4
+    },
+    {
+      "site": "knix.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 78
+    },
+    {
+      "site": "kosas.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 15
+    },
+    {
+      "site": "kytebaby.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 115
+    },
+    {
+      "site": "lauramercier.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 13
+    },
+    {
+      "site": "leatherman.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 58
+    },
+    {
+      "site": "lolablankets.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 22
+    },
+    {
+      "site": "magnatiles.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 27
+    },
+    {
+      "site": "maryruthorganics.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 35
+    }
+  ],
+  "live_cases": [
+    {
+      "site": "nodpod.com",
+      "passed": true,
+      "scope": "directory_only",
+      "categories": 3,
+      "unique_targets": 3,
+      "target_validation_seconds": 4.857,
+      "llm_invocations": 0,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\category-fix-nodpod-final-20261114"
+    },
+    {
+      "site": "iniushop.com",
+      "passed": true,
+      "scope": "directory_only",
+      "categories": 31,
+      "unique_targets": 30,
+      "target_validation_seconds": 30.839,
+      "llm_invocations": 0,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\category-fix-iniu-final-20261114"
+    }
+  ],
+  "performance_10_seconds_for_100_categories_met": false,
+  "performance_note": "4 workers; shared request spacing 0.2 seconds; every unique destination checked. 100 collections requiring two requests each have about 40 seconds of pacing alone. No 100-target live benchmark was performed.",
+  "canonical_redirect_live_evidence": "runs/category-fix-nodpod-20261114/navigation_targets.json",
+  "source_sha256": {
+    "core/navigation_release.py": "2cd9a76317fb05c27a3f5caa6aa10e14c66c3400264f189a547b2bfc3a3c429e",
+    "core/menu_tree.py": "988e3ec49ae5499bf63e6fa8f684810fe32c237a61f5bfc7ea81ec060c37b250",
+    "core/validator.py": "f6c6bfa55619912df5267c37824cded3e71003143804ab8bfe8ebadca2219cc6",
+    "extract_categories.py": "5e321d1c05621a9d6e473391103d06565f322d47e98a00029c332055a485fec9"
+  }
+}

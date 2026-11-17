@@ -1,0 +1,39 @@
+{
+  "date": "2026-11-13",
+  "mode": "platform_default_ai_category_json",
+  "unit_tests": 59,
+  "jobs": [
+    {
+      "site": "hexclad.com",
+      "id": "09ee8f29b76224b9",
+      "status": "completed",
+      "filter": "Bags",
+      "categories": 42,
+      "links": 8,
+      "offline_verified": true,
+      "llm_invocations": 1
+    },
+    {
+      "site": "cozyearth.com",
+      "id": "d95bfe6dee67f3c1",
+      "status": "failed",
+      "reason": "AI directory session timed out at 900 seconds; no published artifacts"
+    },
+    {
+      "site": "darntough.com",
+      "id": "e5ef91de4a5cbc5b",
+      "status": "interrupted",
+      "reason": "Stopped the previous all-AI run to switch to the requested hybrid workflow; no published artifacts"
+    },
+    {
+      "site": "explodingkittens.com",
+      "id": "723acb894fd7479d",
+      "status": "completed",
+      "categories": 18,
+      "links": 24,
+      "offline_verified": true,
+      "llm_invocations": 1,
+      "seconds": 511.025
+    }
+  ]
+}

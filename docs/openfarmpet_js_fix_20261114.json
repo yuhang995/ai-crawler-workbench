@@ -1,0 +1,110 @@
+{
+  "scope": "navigation_only",
+  "status": "completed",
+  "cause": "libxml2 HTML recovery misparses Alpine @event attributes containing quoted arrow functions",
+  "normalization": "quote-aware HTML tokenizer renames only real @event attribute names; original HTML evidence retained",
+  "additional_fixes": [
+    "Source-owned external Dog/Cat state panels",
+    "Same-section image/CTA alias labels",
+    "Do not blacklist Digestive Support as customer support"
+  ],
+  "live": {
+    "status": "completed",
+    "scope": "navigation_only",
+    "categories": 76,
+    "navigation_version": "dffa9601bdaca630e82e2e22cc89e687a046cd56c0dc1cbd589f779119ad86a7",
+    "seconds": 56.327,
+    "target_validation_seconds": 45.869
+  },
+  "unique_targets": 65,
+  "ai_invocations": 0,
+  "unittest": {
+    "count": 148,
+    "passed": true,
+    "seconds": 69.058
+  },
+  "ten_site_historical_replay": [
+    {
+      "site": "jonesroadbeauty.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 7
+    },
+    {
+      "site": "k18hair.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 4
+    },
+    {
+      "site": "knix.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 78
+    },
+    {
+      "site": "kosas.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 15
+    },
+    {
+      "site": "kytebaby.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 115
+    },
+    {
+      "site": "lauramercier.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 13
+    },
+    {
+      "site": "leatherman.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 58
+    },
+    {
+      "site": "lolablankets.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 22
+    },
+    {
+      "site": "magnatiles.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 27
+    },
+    {
+      "site": "maryruthorganics.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 35
+    }
+  ],
+  "pitfalls_path": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\skills\\category-json\\pitfalls.md",
+  "pitfalls_lines": 36,
+  "final_json": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\openfarmpet-js-fixed-20261114-verified\\url.json",
+  "source_sha256": {
+    "core\\ai_runtime.py": "1628ead3a0102ac6819620239cfb176507391a4e245393674329ab3259eab697",
+    "core\\ai_worker.py": "bbdd8365de4417c120bad1287eb65152dffeea234f353db16afc68cc87ac9964",
+    "core\\common.py": "22f185b4a4762fcd8b2425cd8b009962db8cf21d788c1082bfb04c631897442e",
+    "core\\detector.py": "19c19dbc174369d98364fb3cc934eec03ebfc58b79cb662bbc4d5676e36ce2bd",
+    "core\\html_parser.py": "56e4f6ed1615e318b2e379d250e6072d7c44e01efc628fca24e2d46d6b057479",
+    "core\\hybrid_navigation.py": "1b37af8567c42b65f4836fbdcc1ab29a2a1fa3550d1bdb179154632f9c6198bf",
+    "core\\menu_tree.py": "175c46c2e0b442204873aab3d3bacfdd5820140db25fe8a39e4df5599fed76c2",
+    "core\\navigation_ai.py": "43c1c217de2536d2206a9c5364bac605a734c153590c7137a7ed5dd60040fae1",
+    "core\\navigation_browser_tool.py": "ccb160057826c112927a89e08016f2da4ae69e6f7e58256b941b059df273dfed",
+    "core\\navigation_guard.py": "085d65f9c83e8f8ab8c6f660c3d59fb2331986fb1b78168c25f48832ccc27a3e",
+    "core\\navigation_release.py": "7fd3a3fe4678fc70d0dd5880a502132700547eb62ff09fd8f6de2d2acbeb6e51",
+    "core\\navigation_rules.py": "9213bfd77257f473f7749b8b0f11e829c31e5697b6c299a9dfe45ad123d08899",
+    "core\\nav_extractor.py": "8995edde212f1501d09e72a3463e5161b7e45c5744d58af30b9f0015b4662a9b",
+    "core\\pipeline.py": "9da3a7b3cef64d8ff23bafb70551c99ada36b714a4266cc91a41fe52ede19bd4",
+    "core\\shopify_fastpath.py": "74b3bad0f187515b77c05f56901fa4011db94f948477186c7702eda32fa6a728",
+    "core\\validator.py": "3ab6278d53b5890d803138d80dac5cd648ad455a7acbdfe35829bb57bfa0ccaf",
+    "core\\__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

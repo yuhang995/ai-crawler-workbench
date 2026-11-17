@@ -1,0 +1,171 @@
+import unittest
+import threading
+from unittest.mock import MagicMock,patch
+
+from playwright.sync_api import TimeoutError as BrowserTimeout
+
+from core.common import CrawlError
+from core.shopify_fastpath import (collect_listing,embedded_product_handles,
+                                   goto_listing,RenderedPages,route_listing_assets)
+from core.validator import source_order
+
+
+BASE='https://example.com/collections/shop'
+
+
+def product(slug,number):
+    return {'id':number,'handle':slug,'title':slug,'variants':[{'id':number*10,'price':'1.00'}]}
+
+
+class Response:
+    def __init__(self,text,url=BASE):self.text=text;self.url=url
+
+
+class Client:
+    def __init__(self,html,products):self.html=html;self.products=products
+    def get(self,url):return Response(self.html,url)
+    def json(self,url):return {'products':self.products}
+
+
+class FeedOrderFallbackTests(unittest.TestCase):
+    def test_collection_html_warms_same_session_before_products_feed(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        html='<main id="product-grid">' + ''.join(
+            f'<a href="/products/{item["handle"]}">{item["handle"]}</a>' for item in products) + '</main>'
+
+        class WarmSessionClient:
+            def __init__(self):
+                self.warmed=False
+                self.calls=[]
+                self.thread_ids=[]
+
+            def get(self,url):
+                self.calls.append(('html',url))
+                self.thread_ids.append(threading.get_ident())
+                self.warmed=True
+                return Response(html,url)
+
+            def json(self,url):
+                self.calls.append(('json',url))
+                self.thread_ids.append(threading.get_ident())
+                if not self.warmed:
+                    raise CrawlError('HTTP Error 403: collection session cookie missing')
+                return {'products':products}
+
+        client=WarmSessionClient()
+        result=collect_listing(client,BASE)
+        self.assertEqual([kind for kind,_ in client.calls[:2]],['html','json'])
+        self.assertEqual(len(set(client.thread_ids)),1)
+        self.assertEqual([item['handle'] for item in result['products']],['a','b','c'])
+
+    def test_malformed_header_ancestor_collects_without_browser(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        html='''<html><body><header><nav><a href="/products/nav-only">Navigation</a>
+          <main id="MainContent"><div class="products"><a href="/products/c">C</a>
+          <a href="/products/a">A</a><a href="/products/b">B</a></div></main>
+          </nav></header></body></html>'''
+        with patch('core.shopify_fastpath.rendered_listing_pages',side_effect=AssertionError('browser called')):
+            result=collect_listing(Client(html,products),BASE)
+        self.assertEqual([item['handle'] for item in result['products']],['c','a','b'])
+        self.assertEqual(result['warnings'],[])
+
+    def test_embedded_handles_use_main_order_and_ignore_header(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        html='''<header><a href="/products/a">A</a></header><main><script>
+          {"handle":"c"},{"handle":"a"},{"url":"/products/b"}
+        </script></main>'''
+        self.assertEqual(embedded_product_handles(html,products,BASE),['c','a','b'])
+
+    def test_embedded_order_skips_browser(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        html='<main><script>{"handle":"b"},{"handle":"c"},{"handle":"a"}</script></main>'
+        with patch('core.shopify_fastpath.rendered_listing_pages',side_effect=AssertionError('browser called')):
+            result=collect_listing(Client(html,products),BASE)
+        self.assertEqual([p['handle'] for p in result['products']],['b','c','a'])
+        self.assertEqual(result['warnings'],[])
+
+    def test_paginated_feed_rebuilds_embedded_order_after_all_products_arrive(self):
+        products=[product(f'p{i}',i) for i in range(1,53)]
+        order=['p3','p1','p2','p52','p51']+[f'p{i}' for i in range(4,51)]
+        html='<main><script>'+','.join('{"handle":"'+slug+'"}' for slug in order)+'</script></main>'
+        class PagedClient:
+            def get(self,url): return Response(html,url)
+            def json(self,url):
+                return {'products': products[50:] if 'page=2' in url else products[:50]}
+        with patch('core.shopify_fastpath.rendered_listing_pages',
+                   side_effect=AssertionError('browser called')):
+            result=collect_listing(PagedClient(),BASE)
+        self.assertEqual([p['handle'] for p in result['products']],order)
+        self.assertEqual(source_order(result),order)
+
+    def test_unfiltered_browser_timeout_uses_feed_order_with_warning(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        with patch('core.shopify_fastpath.rendered_listing_pages',side_effect=BrowserTimeout('grid timeout')):
+            result=collect_listing(Client('<main></main>',products),BASE)
+        self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
+        self.assertEqual(result['warnings'][0]['code'],'listing_order_feed_fallback')
+
+    def test_successful_render_without_cards_uses_unfiltered_feed_order(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        rendered=RenderedPages();rendered[BASE]='<div><product-grid></product-grid></div>'
+        with patch('core.shopify_fastpath.rendered_listing_pages',return_value=rendered):
+            result=collect_listing(Client('<div></div>',products),BASE)
+        self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
+        self.assertEqual(result['order_evidence'],'products_feed_fallback')
+        self.assertEqual(result['warnings'][0]['reason'],'rendered_grid_empty')
+
+    def test_unfiltered_opaque_load_more_uses_complete_feed_with_warning(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        html='''<main id="product-grid">
+          <a href="/products/c">C</a><a href="/products/a">A</a>
+          <button class="load-more">Load more</button></main>'''
+        with patch('core.shopify_fastpath.rendered_listing_pages',
+                   side_effect=AssertionError('browser called')):
+            result=collect_listing(Client(html,products),BASE)
+        self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
+        self.assertEqual(result['order_evidence'],'products_feed_fallback')
+        self.assertEqual(result['warnings'][0]['reason'],'dynamic_load_more')
+
+    def test_filtered_browser_timeout_never_broadens_to_feed(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        with patch('core.shopify_fastpath.rendered_listing_pages',side_effect=BrowserTimeout('grid timeout')):
+            with self.assertRaises(BrowserTimeout):
+                collect_listing(Client('<main></main>',products),BASE+'?filter.color=blue')
+
+    def test_goto_uses_commit_and_12_second_element_wait(self):
+        page=MagicMock();page.url=BASE;warnings=[]
+        goto_listing(page,BASE,warnings)
+        page.goto.assert_called_once_with(BASE,wait_until='commit',timeout=12000)
+        page.locator.return_value.first.wait_for.assert_called_once_with(timeout=12000)
+
+    def test_route_blocks_heavy_and_trackers_but_keeps_first_party_data(self):
+        page=MagicMock();route_listing_assets(page,BASE)
+        callback=page.route.call_args.args[1]
+        for url,kind,blocked in [('https://example.com/a.jpg','image',True),
+                                 ('https://www.google-analytics.com/g.js','script',True),
+                                 ('https://example.com/products.json','xhr',False)]:
+            route=MagicMock();request=MagicMock(url=url,resource_type=kind)
+            callback(route,request)
+            self.assertEqual(route.abort.called,blocked)
+            self.assertEqual(route.continue_.called,not blocked)
+
+    def test_validator_accepts_saved_unfiltered_feed_fallback_and_rejects_scope(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        listing={'url':BASE,'feeds':[{'products':products}],'feed_page_size':50,
+                 'pages':[{'url':BASE,'html':'<main></main>','handles':['a','b','c']}],
+                 'warnings':[{'code':'listing_order_feed_fallback'}],
+                 'order_evidence':'products_feed_fallback'}
+        self.assertEqual(source_order(listing),['a','b','c'])
+        listing['url']=BASE+'?compatible-with=Phone'
+        with self.assertRaises(CrawlError):source_order(listing)
+
+    def test_validator_recomputes_embedded_order(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        html='<main><script>{"handle":"c"},{"handle":"a"},{"handle":"b"}</script></main>'
+        listing={'url':BASE,'feeds':[{'products':products}],'feed_page_size':50,
+                 'pages':[{'url':BASE,'html':html,'handles':['c','a','b']}],
+                 'warnings':[],'order_evidence':'embedded_handles'}
+        self.assertEqual(source_order(listing),['c','a','b'])
+
+
+if __name__=='__main__':unittest.main()

@@ -1,0 +1,90 @@
+[
+  {
+    "status": "completed",
+    "site": "https://gcioutdoor.com/",
+    "mode": "standard_shopify",
+    "manual": false,
+    "seconds": 5.682,
+    "nav_seconds": 0.1298,
+    "validation": {
+      "products": 3,
+      "variants": 15,
+      "passed": true,
+      "categories": 26,
+      "sampled_categories": 1,
+      "seconds": 0.4419
+    },
+    "samples": [
+      {
+        "id": "6976235307166",
+        "title": "Comfort Pro Rocker™",
+        "url": "https://gcioutdoor.com/products/comfort-pro-rocker",
+        "variants": 8
+      },
+      {
+        "id": "15181477839211",
+        "title": "Comfort Pro Insulated Rocker™",
+        "url": "https://gcioutdoor.com/products/comfort-pro-insulated-rocker",
+        "variants": 2
+      },
+      {
+        "id": "14655914934635",
+        "title": "Comfort Pro Rocker XL™",
+        "url": "https://gcioutdoor.com/products/comfort-pro-rocker-xl",
+        "variants": 5
+      }
+    ],
+    "llm_invocations": 0,
+    "listing_categories": 1,
+    "listing_links": 35,
+    "first3_seconds": 1.1534,
+    "first3_cpu_seconds": 0.3094,
+    "wall_seconds": 5.716,
+    "zip_offline_verified": true,
+    "zip_bytes": 513024
+  },
+  {
+    "status": "completed",
+    "site": "https://blackstoneproducts.com/",
+    "mode": "standard_shopify",
+    "manual": false,
+    "seconds": 4.231,
+    "nav_seconds": 0.1159,
+    "validation": {
+      "products": 3,
+      "variants": 3,
+      "passed": true,
+      "categories": 26,
+      "sampled_categories": 1,
+      "seconds": 0.2147
+    },
+    "samples": [
+      {
+        "id": "7284726988844",
+        "title": "36” Griddle with Hood",
+        "url": "https://blackstoneproducts.com/products/36-omnivore-griddle-w-hood",
+        "variants": 1
+      },
+      {
+        "id": "7276203245612",
+        "title": "36\" Griddle with Hood",
+        "url": "https://blackstoneproducts.com/products/iron-forged-36in-griddle-w-hood",
+        "variants": 1
+      },
+      {
+        "id": "7831066902572",
+        "title": "36\" Griddle Airfryer Combo",
+        "url": "https://blackstoneproducts.com/products/iron-forged-36-griddle-airfryer-combo",
+        "variants": 1
+      }
+    ],
+    "llm_invocations": 0,
+    "listing_categories": 1,
+    "listing_links": 18,
+    "first3_seconds": 0.3754,
+    "first3_cpu_seconds": 0.0604,
+    "wall_seconds": 4.256,
+    "zip_offline_verified": true,
+    "zip_bytes": 586885
+  }
+]

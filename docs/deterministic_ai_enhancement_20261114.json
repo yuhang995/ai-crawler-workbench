@@ -1,0 +1,134 @@
+{
+  "unit_tests": {
+    "passed": true,
+    "count": 142,
+    "seconds": 54.26,
+    "log": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\deterministic-ai-enhancement-20261114\\unittest-final.log"
+  },
+  "historical_replay": [
+    {
+      "site": "jonesroadbeauty.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 7
+    },
+    {
+      "site": "k18hair.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 4
+    },
+    {
+      "site": "knix.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 78
+    },
+    {
+      "site": "kosas.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 15
+    },
+    {
+      "site": "kytebaby.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 115
+    },
+    {
+      "site": "lauramercier.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 13
+    },
+    {
+      "site": "leatherman.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 58
+    },
+    {
+      "site": "lolablankets.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 22
+    },
+    {
+      "site": "magnatiles.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 27
+    },
+    {
+      "site": "maryruthorganics.com",
+      "passed": true,
+      "scope": "historical_navigation_only",
+      "categories": 35
+    }
+  ],
+  "live_cases": [
+    {
+      "site": "iniushop.com",
+      "first_cli_attempt_passed": true,
+      "scope": "navigation_only",
+      "categories": 31,
+      "unique_targets": 30,
+      "total_seconds": 32.963,
+      "target_validation_seconds": 22.51,
+      "llm_invocations": 0,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\deterministic-ai-enhancement-20261114\\iniushop.com"
+    },
+    {
+      "site": "nodpod.com",
+      "first_cli_attempt_passed": true,
+      "scope": "navigation_only",
+      "categories": 3,
+      "unique_targets": 3,
+      "total_seconds": 10.187,
+      "target_validation_seconds": 4.409,
+      "llm_invocations": 0,
+      "output": "D:\\Users\\23696\\Documents\\ChatGPT\\新ai爬虫\\runs\\deterministic-ai-enhancement-20261114\\nodpod.com"
+    }
+  ],
+  "synthetic_120_targets": {
+    "scope": "synthetic_HTTP_responses_real_pacing_and_full_publish",
+    "network_latency_simulated": false,
+    "live_website": false,
+    "targets": 120,
+    "requests": 240,
+    "worker_threads": 4,
+    "min_worker_request_interval": 0.20299999999406282,
+    "publish_seconds": 13.642,
+    "under_15_seconds": true,
+    "note": "内存响应，不含互联网延迟；不能作为120分类实站在15秒内完成的证据"
+  },
+  "selfcheck_loop": [
+    {
+      "step": "invalid",
+      "returncode": 1,
+      "stdout": "ERROR: 无法从原始 DOM 独立确认目录归属，需明确审查证据: Shop",
+      "wall_seconds": 1.3708,
+      "validator_seconds": 0.0632
+    },
+    {
+      "step": "corrected",
+      "returncode": 0,
+      "stdout": "OK",
+      "wall_seconds": 1.5004,
+      "validator_seconds": 0.1198
+    }
+  ],
+  "live_80_to_120_targets_under_15_seconds_verified": false,
+  "live_ai_model_invoked": false,
+  "source_sha256": {
+    "core/common.py": "22f185b4a4762fcd8b2425cd8b009962db8cf21d788c1082bfb04c631897442e",
+    "core/navigation_release.py": "7760641c0d210dfea798d438a9965c99ed9683d1c7493beb68a3a2dd49d64411",
+    "core/menu_tree.py": "666be5b7f2ca733c1379b4df322bc33bbb9d91dcc43e66eca2b3359f5b6bf7ca",
+    "core/nav_extractor.py": "5f715e37e578da156bacceca2a68ac4526f900df64855db38c611ea20a0c1e3c",
+    "core/navigation_rules.py": "e9e7b39ea5dacb6656d244703e463b5d7d0e6882e0424450d148542abee0e9a8",
+    "core/navigation_ai.py": "136995726587d8ab3cba78e1b51e4105d734d5a97a7106f70f11357a87b21301",
+    "extract_categories.py": "f0db4e7846f4e6992e03582fd639be3af678ac53d39c0d72600b5984c8d98725"
+  },
+  "pitfalls_lines": 15
+}
