@@ -70,6 +70,39 @@ class SimpleNavOutlineTests(unittest.TestCase):
         self.assertIn('[a] Minted Cucumber -> /collections/mint', outline)
         self.assertNotIn('Cucumber aloe infused', outline)
 
+    def test_image_only_menu_card_uses_its_sibling_title_without_self_heal(self):
+        html = '''<header><nav><details><summary>Shop</summary><div class="menu-panel">
+          <div class="menu-card"><a href="/collections/all"><img alt=""></a>
+            <div class="card-title">ALL PRODUCTS</div></div>
+          <div class="menu-card"><a href="/collections/full"><img alt=""></a>
+            <div class="card-title">FULL SIZE</div><p>Protein: 17g</p></div>
+          <a href="/collections/bundle">Build A Bundle</a>
+        </div></details></nav>
+        <header-drawer class="mobile"><nav>
+          <a href="/collections/all">ALL PRODUCTS</a>
+          <a href="/collections/full">FULL SIZE</a>
+          <a href="/collections/bundle">Build A Bundle</a>
+        </nav></header-drawer></header>'''
+        data = slim_html_for_ai(html, BASE)
+        self.assertIn('[a] ALL PRODUCTS -> /collections/all', data['navigation_outline'])
+        self.assertIn('[a] FULL SIZE -> /collections/full', data['navigation_outline'])
+        self.assertNotIn('Protein: 17g', data['navigation_outline'])
+        self.assertEqual(data['navigation_coverage']['ratio'], 1.0)
+        self.assertFalse(data['navigation_coverage']['needs_self_heal'])
+
+    def test_declared_sibling_menu_panels_keep_control_ownership(self):
+        html = '''<header><nav><details><summary>Shop</summary>
+          <a href="javascript:void(0)" menu_id="item_all">Shop All</a>
+          <a href="javascript:void(0)" menu_id="item_size">Shop By Size</a>
+          <div class="item_all_display"><div class="menu-card">
+            <a href="/collections/all"><img alt=""></a><div class="card-title">ALL PRODUCTS</div></div></div>
+          <div class="item_size_display"><div class="menu-card">
+            <a href="/collections/full"><img alt=""></a><div class="card-title">FULL SIZE</div></div></div>
+        </details></nav></header>'''
+        outline = slim_html_for_ai(html, BASE)['navigation_outline']
+        self.assertLess(outline.index('[label] Shop All'), outline.index('[a] ALL PRODUCTS -> /collections/all'))
+        self.assertLess(outline.index('[label] Shop By Size'), outline.index('[a] FULL SIZE -> /collections/full'))
+
     def test_home_collection_trailing_slash_duplicate_preserves_filter_scope(self):
         html = '''<header><nav><a href="/collections/mixes">Mixes</a></nav></header>
             <main><a href="/collections/mixes/">Shop Now</a>

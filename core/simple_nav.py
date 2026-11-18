@@ -519,6 +519,8 @@ def _label(node):
 
     strings = [item for item in node.find_all(string=True) if str(item).strip() and visible(item)]
     value = ' '.join(' '.join(str(item).split()) for item in strings)
+    if node.name == 'a' and not value and node.get('data-crawl-image-label'):
+        value = ' '.join(node['data-crawl-image-label'].split())
     if node.name == 'a' and len(strings) > 1:
         # Image menu cards can contain a short category title followed by a
         # marketing sentence.  Exact agreement between an image alt and one
@@ -729,6 +731,12 @@ def _outline(node, base):
         if not owned_urls(current):
             return
         children = [child for child in current.children if getattr(child, 'name', None)]
+        declared_owner = ' '.join(str(current.get('data-crawl-panel-owner', '')).split())
+        if declared_owner:
+            lines.append('  ' * min(depth, 5) + '[label] ' + declared_owner)
+            for child in children:
+                walk(child, depth + 1)
+            return
         # A <nav> is the root-entry container, never the owner of every link
         # merely because its first direct child is a utility label.  Choosing
         # that label would attach sibling menus (for example Shop by Color)
@@ -1197,13 +1205,27 @@ def slim_html_for_ai(html: str, base_url: str) -> dict:
             anchor['data-crawl-desktop-hidden'] = '1'
     source_nodes = _source_navigation_nodes(soup, base_url)
     source_navigation_urls = set().union(*(_category_urls(node, base_url) for node in source_nodes)) if source_nodes else set()
+    # A family of mega-menu themes binds a visible control to a sibling panel
+    # with a stable token instead of nesting that panel below the control.
+    # Preserve this declared relationship before the attribute allow-list is
+    # applied.  This is structural evidence from the page, not a domain rule.
+    for control in soup.select('[menu_id],[data-menu-id]'):
+        token = str(control.get('menu_id') or control.get('data-menu-id') or '').strip()
+        owner = _label(control).strip()
+        if not token or not owner:
+            continue
+        for panel in soup.find_all(class_=True):
+            classes = {str(value) for value in panel.get('class', [])}
+            if any(value == token or value.startswith(token + '_') or value.startswith(token + '-')
+                   for value in classes):
+                panel['data-crawl-panel-owner'] = owner
     # Mark visual cards before removing images.  Product cards often split the
     # image, title and CTA across sibling anchors; marking only the image link
     # lets a generic ``SHOP NOW`` sibling become a fake category owner.  Mark
     # every non-category anchor in the nearest card-like wrapper while keeping
     # unique collection cards eligible for homepage/menu extraction.
     card_pattern = re.compile(
-        r'(?:^|[-_\s])(?:card|tile|promo|featured(?:images?)?|product|slide|banner)(?:[-_\s]|$)',
+        r'(?:^|[-_\s])(?:card|tile|mainbox|promo|featured(?:images?)?|product|slide|banner)(?:[-_\s]|$)',
         re.I)
     for image in soup.select('img'):
         anchor = image.find_parent('a', href=True)
@@ -1222,6 +1244,24 @@ def slim_html_for_ai(html: str, base_url: str) -> dict:
             anchor['data-crawl-promo-card'] = '1'
             if image.get('alt', '').strip():
                 anchor['data-crawl-image-label'] = ' '.join(image['alt'].split())
+            elif card is not None and legal_url(_anchor_target(anchor, base_url), base_url):
+                # Mega-menu category cards often make only the image clickable
+                # and render the visible title in a sibling element.  Dropping
+                # that image leaves a real href with no label, which falsely
+                # lowers outline coverage and forces an unnecessary AI
+                # self-heal.  Bind only a short, explicitly title/heading-
+                # marked sibling from the same card; never infer from a slug or
+                # concatenate the whole card text.
+                title_marker = re.compile(r'(?:^|[-_])(?:title|heading|headline)(?:$|[-_])', re.I)
+                titles = []
+                for title in card.select('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="heading"],[class*="headline"]'):
+                    marker = ' '.join(str(value) for value in title.get('class', []))
+                    value = ' '.join(title.get_text(' ', strip=True).split())
+                    if (value and len(value) <= 100
+                            and (title.name.startswith('h') or title_marker.search(marker))):
+                        titles.append(value)
+                if titles:
+                    anchor['data-crawl-image-label'] = min(titles, key=len)
         if card is not None:
             related_anchors = card.select('a[href]')
             product_card = any('/products/' in urlsplit(
@@ -1239,7 +1279,8 @@ def slim_html_for_ai(html: str, base_url: str) -> dict:
     for comment in soup.find_all(string=lambda s: isinstance(s, Comment)):
         comment.extract()
     keep = {'aria-label', 'aria-controls', 'aria-hidden', 'hidden', 'role', 'id', 'class', 'href', 'title',
-            'data-crawl-promo-card', 'data-crawl-desktop-hidden', 'data-crawl-image-label'}
+            'data-crawl-promo-card', 'data-crawl-desktop-hidden', 'data-crawl-image-label',
+            'data-crawl-panel-owner'}
     for node in soup.find_all(True):
         node.attrs = {k: v for k, v in node.attrs.items() if k in keep}
     region_data, removed_regions = _navigation_regions(soup, base_url)
