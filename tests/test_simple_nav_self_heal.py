@@ -673,6 +673,33 @@ class SimpleNavSelfHealTests(unittest.TestCase):
             self.assertEqual(coverage['final_ai_root_basis'], 'source_outline_intersection')
             self.assertEqual(coverage['final_ai_root_ratio'], 1.0)
 
+    def test_missing_primary_bar_does_not_treat_every_leaf_as_required_root(self):
+        data = self.broken_outline_data()
+        data['navigation_coverage'].update({
+            'source_roots': [f'Leaf {index}' for index in range(120)],
+            'primary_root_bar': [],
+            'outline_roots': ['Search closed'],
+            'root_ratio': 0.0,
+            'needs_self_heal': True,
+        })
+        entries = [
+            {'key': f'Owner {index % 5},Owner {index % 5} Item {index}',
+             'url': BASE + f'collections/item-{index}'}
+            for index in range(5)
+        ]
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.simple_nav.shutil.which', return_value='codex.exe'), patch(
+                'core.simple_nav.subprocess.Popen', side_effect=self.launch_with(entries, [])):
+            categories = extract_url_json_with_ai(directory, BASE, data)
+            coverage = read_json(Path(directory) / 'evidence/navigation_coverage.json')
+        self.assertEqual(len(categories), 5)
+        self.assertEqual(coverage['final_ai_output_ratio'], 1.0)
+        self.assertEqual(coverage['final_ai_root_ratio'], 1.0)
+        self.assertEqual(coverage['final_ai_root_basis'],
+                         'url_coverage_plus_structural_roots')
+        self.assertEqual(set(key.split(',', 1)[0] for key in categories),
+                         {f'Owner {index}' for index in range(5)})
+
     def test_hard_timeout_without_candidate_remains_retryable_failure(self):
         data = self.broken_outline_data()
 

@@ -475,6 +475,42 @@ def hydrogen_product_from_html(html, expected_handle=''):
     route = _hydrogen_route(html, 'products')
     if isinstance(route.get('rootProduct'), dict) and route['rootProduct'].get('childProducts'):
         return _combined_hydrogen_product(route, expected_handle)
+    mapped = route.get('mappedProduct') if isinstance(route, dict) else None
+    if isinstance(mapped, dict) and isinstance(mapped.get('product'), dict):
+        # Newer Oxygen storefronts expose a presentation-ready mapped product:
+        # identity/options live under ``product`` while complete real variants,
+        # gallery, display title and vendor are siblings.  Convert only those
+        # observed fields back to the canonical Storefront shape.
+        source = dict(mapped['product'])
+        variants = mapped.get('variants')
+        if not isinstance(variants, list) or not variants:
+            raise CrawlError('Hydrogen mappedProduct 变体为空')
+        option_names = []
+        for variant in variants:
+            if not isinstance(variant, dict):
+                raise CrawlError('Hydrogen mappedProduct 变体结构无效')
+            for selected in variant.get('selectedOptions') or []:
+                name = selected.get('name') if isinstance(selected, dict) else None
+                if name and name not in option_names:
+                    option_names.append(name)
+        declared = {str(option.get('name')): option for option in source.get('options') or []
+                    if isinstance(option, dict) and option.get('name')}
+        if not option_names or any(name not in declared for name in option_names):
+            raise CrawlError('Hydrogen mappedProduct 选项与变体不一致')
+        source['options'] = [declared[name] for name in option_names]
+        source['variants'] = {'nodes': variants}
+        media = []
+        for item in (mapped.get('media') or {}).get('images', []):
+            image = item.get('image') if isinstance(item, dict) else None
+            if isinstance(image, dict) and image.get('url'):
+                media.append({'previewImage': image})
+        source['media'] = {'nodes': media}
+        title = mapped.get('title') or {}
+        vendor = mapped.get('vendor') or {}
+        source['title'] = (title.get('full') if isinstance(title, dict) else title) or ''
+        source['vendor'] = (vendor.get('raw') if isinstance(vendor, dict) else vendor) or ''
+        source['descriptionHtml'] = mapped.get('descriptionHtml') or source.get('description') or ''
+        return _normalize_hydrogen_product(source, expected_handle)
     source = route.get('product') if isinstance(route, dict) else None
     if (not isinstance(source, dict) and isinstance(route, dict)
             and route.get('handle') and route.get('id')):
@@ -709,6 +745,40 @@ def _hydrogen_collection_page(html, url, router_response=None):
     # pagination ledger from the same server-rendered loader response.
     route_products = route.get('products') if isinstance(route, dict) else None
     route_pagination = route.get('pagination') if isinstance(route, dict) else None
+    route_cursor = route.get('paginationInfo') if isinstance(route, dict) else None
+    if isinstance(route_products, list) and isinstance(route_cursor, dict):
+        expected = urlsplit(url).path.rstrip('/').rsplit('/', 1)[-1]
+        if collection.get('handle') != expected:
+            raise CrawlError('Hydrogen 游标分类商品与请求 handle 不一致')
+        handles, products = [], []
+        for card in route_products:
+            source = card.get('product') if isinstance(card, dict) else None
+            if not isinstance(source, dict):
+                continue
+            slug = str(source.get('handle') or '')
+            product_id = _gid_number(source.get('id'), 'Product')
+            price_range = source.get('priceRange') or {}
+            prices = [price_range.get('minVariantPrice'), price_range.get('maxVariantPrice')]
+            if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', slug)
+                    or not product_id
+                    or any(not isinstance(price, dict) or price.get('currencyCode') != 'USD'
+                           for price in prices)):
+                raise CrawlError('Hydrogen 游标分类商品身份、价格或币种无效')
+            if slug in handles or any(str(item['id']) == product_id for item in products):
+                raise CrawlError('Hydrogen 游标分类商品重复')
+            handles.append(slug)
+            products.append({'id': product_id, 'handle': slug,
+                             'url': product_url(url, slug), 'variants': [],
+                             '_hydrogen_partial': True})
+        more = route_cursor.get('hasNextPage')
+        cursor = str(route_cursor.get('endCursor') or '')
+        if (not products or not isinstance(more, bool) or (more and not cursor)):
+            raise CrawlError('Hydrogen 游标分类分页状态无效')
+        return {'handles': handles, 'products': products,
+                'current_page': 1, 'total_pages': 1,
+                'total_results': len(products), 'page_size': len(products),
+                'has_next_page': more, 'end_cursor': cursor,
+                'pagination_kind': 'cursor'}
     if isinstance(route_products, list) and isinstance(route_pagination, dict):
         expected = urlsplit(url).path.rstrip('/').rsplit('/', 1)[-1]
         if collection.get('handle') != expected:

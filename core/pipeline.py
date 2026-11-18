@@ -397,6 +397,13 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
             recover(root, str(error))
             detail = read_json(root / 'detail_url.json')
             selected = {key: categories[key] for key in detail}
+            # Bind repaired detail scope to the already-published navigation.
+            # Custom adapters used to do this in their caller, while the former
+            # Shopify fallback bypassed the controlled repair path entirely.
+            from .navigation_release import digest
+            save_json(root / 'detail_release.json', {
+                'navigation_version': release['navigation_version'],
+                'sha256': digest(root / 'detail_url.json')})
             write_sample_scope('repaired')
             return read_json(root / 'samples.json')
         def standard_run():
@@ -412,6 +419,12 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                     selected = {key: url}
                     try:
                         value = collect_listing(client, url)
+                    except AdapterRequired:
+                        # A parser/adapter shape is shared by the storefront;
+                        # retrying a dozen sibling categories only repeats the
+                        # same structural failure and delays controlled repair.
+                        write_sample_scope('adapter_required')
+                        raise
                     except AccessChallenge:
                         # Access challenges are domain/session failures, not a
                         # property of an individual category.  Preserve the
@@ -538,6 +551,10 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                 if not is_repairable(error):
                     raise
                 samples = repair_sample(error)
+                # The controlled repair contract produces verified sample and
+                # detail artifacts; materialize the ordinary delivery CSVs just
+                # as the deterministic standard path would.
+                export(samples, read_json(root / 'detail_url.json'), root)
                 detail, listings = read_json(root / 'detail_url.json'), read_json(root / 'listings.json')
                 custom_attempts = [{'status': 'ai_repaired', 'reason': str(error)}]
             selection_attempts.extend(custom_attempts)
@@ -579,8 +596,18 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                 raise CrawlError('标准 Shopify 首页未确认 US/USD')
             try:
                 samples = standard_run()
-            except AdapterRequired as error:
-                samples = ai_fallback(str(error))
+            except Exception as error:
+                # Shopify/Hydrogen structural drift needs the same bounded,
+                # evidence-backed repair loop as custom storefronts.  The old
+                # ai_worker fallback did not receive the failure traceback,
+                # cached responses or SPA diagnosis, so it repeatedly explored
+                # the repository and timed out.  Integrity/access failures stay
+                # fail-closed through is_repairable().
+                from .ai_repair import is_repairable
+                if not is_repairable(error):
+                    raise
+                samples = repair_sample(error)
+                export(samples, read_json(root / 'detail_url.json'), root)
         if full_products and detection['mode'] in {'standard_shopify', 'hydrogen_shopify'} and not force_ai:
             from .shopify_fastpath import run_products
             event('products', '目录和列表已通过，自动采集全部去重商品；保存可续跑断点')

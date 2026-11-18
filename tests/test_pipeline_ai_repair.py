@@ -61,6 +61,40 @@ def pipeline_dependencies(stack, error):
 
 
 class PipelineAIRepairTests(unittest.TestCase):
+    def test_hydrogen_structural_failure_uses_controlled_repair_context(self):
+        detection = {
+            'mode': 'hydrogen_shopify', 'custom_platform': '',
+            'market': {'confirmed': True, 'countries': ['US'], 'currencies': ['USD']},
+        }
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            stack.enter_context(patch('core.pipeline.Client', CachedClient))
+            stack.enter_context(patch(
+                'core.detector.resolve_storefront', side_effect=lambda client, base, response: response))
+            stack.enter_context(patch('core.custom_site.identify_platform', return_value=''))
+
+            def simple_navigation(work, base, html):
+                categories, evidence, documents, _ = completed_navigation(
+                    work, base, html, '')
+                return categories, evidence, documents
+
+            stack.enter_context(patch('core.simple_nav.run_simple', side_effect=simple_navigation))
+            stack.enter_context(patch('core.pipeline.detect', return_value=detection))
+            structural = AdapterRequired('Hydrogen 分类 loader 结构需要适配')
+            listing = stack.enter_context(patch(
+                'core.pipeline.collect_listing', side_effect=structural))
+            repair = stack.enter_context(patch(
+                'core.ai_repair.repair_sample', side_effect=recovered_artifacts))
+
+            report = run_job(BASE, root)
+
+            listing.assert_called()
+            repair.assert_called_once_with(root, str(structural))
+            self.assertEqual(report['status'], 'completed')
+            context = read_json(root / 'evidence/repair_failure_context.json')
+            self.assertEqual(context['error_type'], 'AdapterRequired')
+            self.assertEqual(context['attempted_category_urls'], [BASE + '/collections/shop'])
+
     def test_catalog_only_custom_site_stops_before_ai_repair(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)

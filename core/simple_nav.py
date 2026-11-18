@@ -1870,20 +1870,43 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
                 url_check = catalog_url
             categories, warnings = clean_categories(
                 output.get('entries', []), slim_data['valid_urls'], base_url, url_check=url_check)
+            source_urls = set(slim_data.get('source_navigation_urls', []))
+            initial_output_coverage = ((len(source_urls & set(categories.values())) / len(source_urls))
+                                       if source_urls else 1.0)
+            source_roots = coverage.get('source_roots', [])
+            primary_roots = coverage.get('primary_root_bar', [])
+            initial_output_roots = {key.split(',', 1)[0].strip().casefold()
+                                    for key in categories}
+            leaf_ledger_unreliable = (
+                not primary_roots
+                and initial_output_coverage >= .90
+                and len(source_roots) >= 20
+                and 2 <= len(initial_output_roots) <= 32
+                and len(source_roots) >= len(initial_output_roots) * 2)
             categories, root_warnings = _canonicalize_ai_roots(
-                categories, coverage.get('source_roots', []))
+                categories, [] if leaf_ledger_unreliable else source_roots)
             warnings.extend(root_warnings)
             categories, collision_warnings = _repair_repeated_control_labels(
                 categories, slim_data.get('self_heal_html', ''), base_url)
             warnings.extend(collision_warnings)
-            source_urls = set(slim_data.get('source_navigation_urls', []))
             output_coverage = ((len(source_urls & set(categories.values())) / len(source_urls))
                                if source_urls else 1.0)
-            source_roots = coverage.get('source_roots', [])
             outline_roots = coverage.get('outline_roots', [])
             validation_roots, root_basis = _root_validation_basis(
                 source_roots, outline_roots, coverage.get('root_ratio', 1.0), 1.0)
             output_roots = {key.split(',', 1)[0].strip().casefold() for key in categories}
+            # If no visible primary root bar could be proven, a theme may expose
+            # every mega-menu leaf as a shallow sibling.  In that shape the raw
+            # ``source_roots`` ledger is not authoritative (SKIMS, for example,
+            # reports 120 leaf labels as roots while the complete hierarchy has
+            # only a small set of real owners).  A complete URL set plus several
+            # bounded structural roots is stronger evidence than demanding that
+            # the AI promote most leaves to level one.  Keep the ordinary root
+            # gate whenever a primary bar exists, and keep rejecting candidates
+            # flattened under one invented root.
+            if leaf_ledger_unreliable:
+                validation_roots = set()
+                root_basis = 'url_coverage_plus_structural_roots'
             output_root_coverage = ((len(validation_roots & output_roots) / len(validation_roots))
                                     if validation_roots else 1.0)
             required_root_ratio = (1.0 if root_basis == 'source_outline_intersection'
