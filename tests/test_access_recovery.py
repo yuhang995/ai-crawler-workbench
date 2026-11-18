@@ -94,10 +94,26 @@ class AccessRecoveryTests(unittest.TestCase):
         session = MagicMock()
         session.get.return_value = response(text='<html><title>Verify you are human</title></html>')
         client.local.session = session
-        with patch.object(client, 'warm_browser_session', side_effect=AccessChallenge('人工验证')):
+        with patch('core.common.time.sleep'), patch.object(
+                client, 'warm_browser_session', side_effect=AccessChallenge('人工验证')):
             with self.assertRaises(AccessChallenge):
                 client.get(BASE, attempts=1)
         self.assertEqual(client.cache, {})
+
+    def test_transient_challenge_is_rechecked_before_browser_recovery(self):
+        client = Client()
+        session = MagicMock()
+        challenged = response(text='<html><title>Verify you are human</title></html>')
+        allowed = response(text='<html><title>Store</title><nav>Shop products</nav></html>')
+        session.get.side_effect = [challenged, allowed]
+        client.local.session = session
+        with patch('core.common.time.sleep') as pause, patch.object(
+                client, 'pace'), patch.object(client, 'warm_browser_session') as warm:
+            actual = client.get(BASE, attempts=1)
+        self.assertIs(actual, allowed)
+        self.assertEqual(pause.call_args_list[0].args, (2.0,))
+        warm.assert_not_called()
+        self.assertEqual(session.get.call_count, 2)
 
     def test_generic_403_warms_once_then_replays_same_request(self):
         client = Client()

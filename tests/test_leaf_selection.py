@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.common import CrawlError, save_json, read_json
+from core.common import AccessChallenge, CrawlError, save_json, read_json
 from core.pipeline import default_sample_candidates, retryable_sample_verification_error, run_job
 
 
@@ -155,6 +155,39 @@ class LeafSelectionTests(unittest.TestCase):
         self.assertEqual(report['selected_sample_categories'], ['Shop,Shop Four'])
         self.assertEqual([a['status'] for a in report['sample_category_attempts']],
                          ['unverifiable_listing','insufficient','insufficient','selected'])
+
+    def test_access_challenge_is_not_swallowed_by_leaf_retry(self):
+        categories = {
+            'Shop,Shop First': BASE + '/collections/first',
+            'Shop,Shop Second': BASE + '/collections/second',
+        }
+        def navigation(root, base, html):
+            from core.simple_nav import publish_simple
+            publish_simple(root, categories)
+            return categories, {'method': 'simple_nav', 'roots': []}, [html]
+        calls = []
+        def listing(client, url):
+            calls.append(url)
+            raise AccessChallenge('站点持续返回人机验证挑战', url)
+        detection = {'mode': 'standard_shopify', 'shopify': True, 'provider': '',
+                     'graphql_candidates': [],
+                     'market': {'countries': ['US'], 'currencies': ['USD'], 'confirmed': True},
+                     'probes': []}
+        with tempfile.TemporaryDirectory() as d, \
+             patch('core.pipeline.Client', Client), \
+             patch('core.detector.canonical_storefront', side_effect=lambda client, response: response), \
+             patch('core.simple_nav.run_simple', side_effect=navigation), \
+             patch('core.pipeline.detect', return_value=detection), \
+             patch('core.pipeline.collect_listing', side_effect=listing), \
+             patch('core.pipeline.prepare_runtime'):
+            with self.assertRaises(AccessChallenge):
+                run_job(BASE, d)
+            failure = read_json(Path(d) / 'failure.json')
+            scope = read_json(Path(d) / 'sample_scope.json')
+        self.assertEqual(calls, [BASE + '/collections/first'])
+        self.assertEqual(failure['status'], 'needs_access_confirm')
+        self.assertEqual(scope['selection_status'], 'needs_access_confirm')
+        self.assertEqual(scope['selection_attempts'], [])
 
     def test_explicit_category_is_not_silently_replaced(self):
         categories = {'A,A Deep': BASE + '/collections/a', 'B,B Deep': BASE + '/collections/b'}

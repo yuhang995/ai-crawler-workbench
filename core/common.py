@@ -147,6 +147,23 @@ def is_access_challenge_response(response):
     return short_page and (challenge_widget or bool(_CHALLENGE_TEXT.search(visible)))
 
 
+def is_transient_verification_response(response):
+    """Return whether a challenge is suitable for one passive delayed replay.
+
+    A plain 403/Forbidden response still goes directly through browser session
+    recovery.  Only explicit verification/interstitial signals get the cheap
+    grace-period retry requested for short-lived CDN checks.
+    """
+    headers = getattr(response, 'headers', {}) or {}
+    if str(headers.get('cf-mitigated', '')).casefold() == 'challenge':
+        return True
+    body = getattr(response, 'text', '') or ''
+    return bool(re.search(
+        r'(?is)just a moment|verify (?:you are|that you are) human|checking your browser|'
+        r'verifying you are human|security verification|challenge-(?:form|running|stage)|cf-turnstile',
+        body if isinstance(body, str) else ''))
+
+
 def visible_html_text(body):
     """Return rendered-ish text without dormant scripts or markup noise."""
     body = body if isinstance(body, str) else ''
@@ -444,6 +461,17 @@ class Client:
                     r = session.get(target, timeout=self.timeout if timeout is None else timeout,
                                     allow_redirects=False, **request_options)
                     challenged = is_access_challenge_response(r)
+                    if challenged and is_transient_verification_response(r):
+                        # Some storefront CDNs briefly return an interstitial while
+                        # establishing a session and clear it without any browser
+                        # interaction.  Recheck once after a small pause before we
+                        # classify the domain as access-blocked or launch recovery.
+                        # Challenge responses are never cached.
+                        time.sleep(2.0)
+                        self.pace()
+                        r = session.get(target, timeout=self.timeout if timeout is None else timeout,
+                                        allow_redirects=False, **request_options)
+                        challenged = is_access_challenge_response(r)
                     if challenged or r.status_code == 403:
                         if recovered:
                             if challenged:

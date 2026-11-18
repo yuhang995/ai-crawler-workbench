@@ -412,6 +412,14 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                     selected = {key: url}
                     try:
                         value = collect_listing(client, url)
+                    except AccessChallenge:
+                        # Access challenges are domain/session failures, not a
+                        # property of an individual category.  Preserve the
+                        # dedicated signal so the workbench can pause and offer
+                        # manual browser confirmation instead of exhausting all
+                        # sample candidates and reporting a generic failure.
+                        write_sample_scope('needs_access_confirm')
+                        raise
                     except CrawlError as error:
                         last_retryable_error = error
                         selection_attempts.append({'category': key, 'url': url,
