@@ -22,7 +22,13 @@ def observe_market(html):
         countries.add(node.get('data-current-country') or node.get('value'))
     for node in soup.select('[data-current-currency],meta[property="og:price:currency"],meta[itemprop=priceCurrency]'):
         currencies.add(node.get('data-current-currency') or node.get('content'))
-    if '__reactRouterContext.streamController.enqueue' in html:
+    # Hydrogen v2 storefronts may expose the same React Router/devalue loader
+    # through either the legacy React Router global or Remix's current global.
+    # The parser supports both; do not skip its verified locale merely because
+    # the JavaScript namespace changed.
+    if any(marker in html for marker in (
+            '__reactRouterContext.streamController.enqueue',
+            '__remixContext.streamController.enqueue')):
         from .shopify_fastpath import hydrogen_market
         selected = hydrogen_market(html)
         if selected['country']:
@@ -39,7 +45,8 @@ def detect(client, base, html, categories):
     from .custom_site import identify_platform
     native_platform = identify_platform(html)
     hydrogen_marker = ('oxygen-v2' in html
-                       or '__reactRouterContext.streamController.enqueue' in html)
+                       or '__reactRouterContext.streamController.enqueue' in html
+                       or '__remixContext.streamController.enqueue' in html)
     headless_shopify = bool(re.search(
         r'''(?:isHeadless\s*:\s*true|["']isHeadless["']\s*:\s*true)''', html, re.I))
     shopify_origin = ''
@@ -48,6 +55,28 @@ def detect(client, base, html, categories):
         html, re.I)
     if origin_match:
         shopify_origin = 'https://' + origin_match.group(1).lower()
+    if hydrogen_marker and not shopify_origin:
+        # Some Oxygen storefronts publish a separate canonical Shopify data
+        # domain in their server-rendered root loader. Decode that declaration
+        # instead of guessing from the branded hostname.
+        from .shopify_fastpath import react_router_payloads
+        for payload in react_router_payloads(html):
+            root = (payload.get('loaderData') or {}).get('root')
+            configs = root.get('envConfigs') if isinstance(root, dict) else None
+            declared = configs.get('shopPrimaryDomainUrl') if isinstance(configs, dict) else None
+            parsed_declared = urlsplit(str(declared or ''))
+            if (parsed_declared.scheme == 'https' and parsed_declared.hostname
+                    and parsed_declared.username is None
+                    and not parsed_declared.path.rstrip('/')
+                    and not parsed_declared.query and not parsed_declared.fragment):
+                try:
+                    cart = client.json(parsed_declared.geturl().rstrip('/') + '/cart.js')
+                    if isinstance(cart, dict) and cart.get('currency') == 'USD':
+                        shopify_origin = parsed_declared.geturl().rstrip('/')
+                        client.shopify_origin = shopify_origin
+                except (CrawlError, ValueError):
+                    pass
+                break
     candidates = ([] if hydrogen_marker or native_platform else
                   list(dict.fromkeys(u for u in categories.values()
                                      if '/collections/' in urlsplit(u).path))[:3])
@@ -216,7 +245,8 @@ def localized_hydrogen_us_storefront(client, response):
     html = response.text
     if (observe_market(html)['confirmed'] or not (
             'oxygen-v2' in html
-            or '__reactRouterContext.streamController.enqueue' in html)):
+            or '__reactRouterContext.streamController.enqueue' in html
+            or '__remixContext.streamController.enqueue' in html)):
         return response
     current = urlsplit(response.url)
     target = f'{current.scheme}://{current.netloc}/en-us'

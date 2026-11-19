@@ -36,6 +36,35 @@ def retryable_sample_verification_error(error):
     return any(marker in message for marker in _RETRYABLE_SAMPLE_ERRORS)
 
 
+def compact_shopify_listing_evidence(listing):
+    """Drop redundant rich product/HTML payloads from feed-order evidence.
+
+    The validator needs immutable product identity, complete feed page sizes and
+    the emitted handle order.  Full product descriptions/images are collected
+    separately from each product endpoint, so repeating them across a hundred
+    overlapping collections only wastes memory and can make json.dumps fail.
+    """
+    if (listing.get('order_evidence') != 'products_feed_fallback'
+            or listing.get('membership_sources')):
+        return listing
+    compact = {key: value for key, value in listing.items()
+               if key not in {'products', 'feeds', 'pages'}}
+    compact['products'] = [
+        {'id': product.get('id'), 'handle': product.get('handle')}
+        for product in listing.get('products', [])]
+    compact['feeds'] = []
+    for feed in listing.get('feeds', []):
+        saved = {key: value for key, value in feed.items() if key != 'products'}
+        saved['products'] = [
+            {'id': product.get('id'), 'handle': product.get('handle')}
+            for product in feed.get('products', [])]
+        compact['feeds'].append(saved)
+    compact['pages'] = [
+        {**{key: value for key, value in page.items() if key != 'html'}, 'html': ''}
+        for page in listing.get('pages', [])]
+    return compact
+
+
 def default_sample_candidates(categories, limit=3):
     """Return distinct deepest leaves in stable menu order.
 
@@ -48,10 +77,16 @@ def default_sample_candidates(categories, limit=3):
     for order, (key, url) in enumerate(items):
         prefix = key + ','
         if not any(other.startswith(prefix) for other, _ in items):
-            leaves.append((-len(split_category_key(key)), order, key, url))
+            labels = split_category_key(key)
+            leaf = labels[-1].casefold() if labels else ''
+            # Broad "All" pages can contain hundreds of products and are poor
+            # smoke-test samples.  Keep them eligible, but prefer an equally
+            # deep, concrete leaf such as a shape, color or product family.
+            broad = bool(re.search(r'(^|\s)(?:shop\s+)?all(?:\s|$)', leaf))
+            leaves.append((-len(labels), broad, order, key, url))
     leaves.sort()
     result, seen_urls = [], set()
-    for _, _, key, url in leaves:
+    for _, _, _, key, url in leaves:
         if url in seen_urls:
             continue
         seen_urls.add(url)
@@ -64,11 +99,11 @@ def default_sample_candidates(categories, limit=3):
 def prepare_runtime(root):
     dest = Path(root) / 'core'
     dest.mkdir(exist_ok=True)
-    for name in ('__init__.py', 'simple_nav.py', 'custom_site.py', 'custom_navigation.py', 'pinia_storefront.py', 'mobify_storefront.py', 'sfcc_storefront.py', 'magento_storefront.py', 'bigcommerce_storefront.py', 'braun_navigation.py', 'braun_listing.py', 'braun_product.py', 'brumate_navigation.py', 'brumate_listing.py', 'practical_navigation.py', 'shopify_inventory.py', 'html_parser.py', 'browser_screenshot.py', 'visual_audit.py', 'visual_capture.py', 'ai_runtime.py', 'common.py', 'shopify_fastpath.py', 'nav_extractor.py', 'menu_tree.py', 'navigation_rules.py', 'navigation_guard.py', 'navigation_release.py', 'detector.py', 'validator.py'):
+    for name in ('__init__.py', 'simple_nav.py', 'custom_site.py', 'custom_navigation.py', 'jsonld_storefront.py', 'pinia_storefront.py', 'mobify_storefront.py', 'sfcc_storefront.py', 'magento_storefront.py', 'bigcommerce_storefront.py', 'braun_navigation.py', 'braun_listing.py', 'braun_product.py', 'brumate_navigation.py', 'brumate_listing.py', 'practical_navigation.py', 'shopify_inventory.py', 'html_parser.py', 'browser_screenshot.py', 'visual_audit.py', 'visual_capture.py', 'ai_runtime.py', 'common.py', 'shopify_fastpath.py', 'nav_extractor.py', 'menu_tree.py', 'navigation_rules.py', 'navigation_guard.py', 'navigation_release.py', 'detector.py', 'validator.py'):
         shutil.copyfile(PROJECT / 'core' / name, dest / name)
     for name, body in {
-        'get_detail_url.py': "from pathlib import Path\nfrom core.common import read_json\nroot=Path(__file__).resolve().parent\ndetection=read_json(root/'detection.json')\nif detection.get('custom_platform') in {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify'}:\n    from core.custom_site import run_links\nelse:\n    from core.shopify_fastpath import run_links\nif __name__ == '__main__':\n    run_links(root)\n",
-        '3.ShopifyCrawl_sort.py': "import argparse\nfrom pathlib import Path\nfrom core.common import read_json\nroot=Path(__file__).resolve().parent\ndetection=read_json(root/'detection.json')\nif detection.get('custom_platform') in {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify'}:\n    from core.custom_site import run_products\nelse:\n    from core.shopify_fastpath import run_products\nif __name__ == '__main__':\n    p=argparse.ArgumentParser()\n    p.add_argument('--all', action='store_true', help='采集 detail_url.json 的全部商品，默认仅3个')\n    a=p.parse_args()\n    run_products(root, a.all)\n",
+        'get_detail_url.py': "from pathlib import Path\nfrom core.common import read_json\nroot=Path(__file__).resolve().parent\ndetection=read_json(root/'detection.json')\nif detection.get('custom_platform') in {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:\n    from core.custom_site import run_links\nelse:\n    from core.shopify_fastpath import run_links\nif __name__ == '__main__':\n    run_links(root)\n",
+        '3.ShopifyCrawl_sort.py': "import argparse\nfrom pathlib import Path\nfrom core.common import read_json\nroot=Path(__file__).resolve().parent\ndetection=read_json(root/'detection.json')\nif detection.get('custom_platform') in {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:\n    from core.custom_site import run_products\nelse:\n    from core.shopify_fastpath import run_products\nif __name__ == '__main__':\n    p=argparse.ArgumentParser()\n    p.add_argument('--all', action='store_true', help='采集 detail_url.json 的全部商品，默认仅3个')\n    a=p.parse_args()\n    run_products(root, a.all)\n",
         'verify.py': "from pathlib import Path\nfrom core.validator import validate\nif __name__ == '__main__':\n    print(validate(Path(__file__).resolve().parent))\n",
     }.items():
         (Path(root) / name).write_text(body, encoding='utf-8')
@@ -487,7 +522,14 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
             else:
                 unique = list(dict.fromkeys(selected.values()))
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    values = list(pool.map(lambda u: collect_listing(client, u), unique))
+                    if full_products and all_categories:
+                        values = list(pool.map(
+                            lambda u: collect_listing(client, u, prefer_feed_order=True),
+                            unique))
+                    else:
+                        # Preserve the historical adapter call contract for
+                        # explicit-category and bounded sample runs.
+                        values = list(pool.map(lambda u: collect_listing(client, u), unique))
             unique = list(dict.fromkeys(selected.values()))
             by_url = dict(zip(unique, values))
             if practical:
@@ -504,7 +546,8 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                             runtime_warnings.append(warning);fingerprints.add(marker)
                 save_json(root/'warnings.json', runtime_warnings)
             for key, u in selected.items():
-                listings[key] = by_url[u]
+                listings[key] = (compact_shopify_listing_evidence(by_url[u])
+                                 if full_products and all_categories else by_url[u])
                 detail[key] = by_url[u]['urls']
             save_json(root / 'listings.json', listings)
             save_json(root / 'detail_url.json', detail)
@@ -571,9 +614,11 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
             save_json(root / 'catalog_only.json', catalog)
             if catalog.get('catalog_only'):
                 listing_url = catalog.get('listing_url')
+                listing_urls = catalog.get('listing_urls') or ([listing_url] if listing_url else [])
+                allowed_listing_urls = {str(value).rstrip('/') for value in listing_urls}
                 verified = ({key: value for key, value in categories.items()
-                             if value.rstrip('/') == str(listing_url).rstrip('/')}
-                            if listing_url else {})
+                             if value.rstrip('/') in allowed_listing_urls}
+                            if allowed_listing_urls else {})
                 if verified and len(verified) < len(categories):
                     from .simple_nav import publish_simple
                     method = read_json(root / 'navigation_report.json').get('method', 'simple_nav')
@@ -684,6 +729,8 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                       'error': redact_sensitive(e, proxy)})
         failure = {'status': 'needs_access_confirm', 'stage': 'access',
                    'error': redact_sensitive(e, proxy), 'url': getattr(e, 'url', None) or site,
+                   'exception_type': type(e).__name__,
+                   'traceback': redact_sensitive(traceback.format_exc(), proxy)[-20_000:],
                    'proxy': redact_proxy(proxy),
                    'seconds': round(time.perf_counter() - start, 3)}
         save_json(root / 'failure.json', failure)
@@ -693,8 +740,11 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
         state = read_json(root / 'navigation_release.json')
         if state.get('status') != 'approved':
             save_json(root / 'navigation_release.json', {'version': 1, 'status': 'blocked', 'error': redact_sensitive(e, proxy)})
-        failure = {'status': 'failed', 'error': redact_sensitive(e, proxy),
+        message = redact_sensitive(e, proxy) or type(e).__name__
+        failure = {'status': 'failed', 'error': message,
+                   'exception_type': type(e).__name__,
+                   'traceback': redact_sensitive(traceback.format_exc(), proxy)[-20_000:],
                    'proxy': redact_proxy(proxy), 'seconds': round(time.perf_counter() - start, 3)}
         save_json(root / 'failure.json', failure)
-        event('failed', redact_sensitive(e, proxy))
+        event('failed', message)
         raise

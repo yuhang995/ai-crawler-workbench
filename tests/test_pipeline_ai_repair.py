@@ -223,7 +223,10 @@ class PipelineAIRepairTests(unittest.TestCase):
                 self.assertIs(raised.exception, error)
                 native.assert_called_once()
                 repair.assert_not_called()
-                self.assertEqual(read_json(root / 'failure.json')['error'], str(error))
+                failure = read_json(root / 'failure.json')
+                self.assertEqual(failure['error'], str(error))
+                self.assertEqual(failure['exception_type'], type(error).__name__)
+                self.assertIn(type(error).__name__, failure['traceback'])
                 self.assertFalse((root / 'crawler.zip').exists())
                 self.assertFalse((root / 'ai_repair.json').exists())
 

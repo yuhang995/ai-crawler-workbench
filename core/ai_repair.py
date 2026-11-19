@@ -97,7 +97,7 @@ def main(url):
             except BrowserTimeout:
                 if not page.url or urlsplit(page.url).hostname != host:
                     raise
-            selectors = ('a[href*="/product"],a[href*="/p/"],'
+            selectors = ('a[href*="/product"],a[href*="/p/"],a[href*="/goods-detail/"],'
                          '[data-pid],[data-product-id],[class*="product-card" i],'
                          '[class*="product-tile" i]')
             try:
@@ -358,6 +358,8 @@ def _prompt(reason, work):
 {json.dumps(facts, ensure_ascii=False, indent=2)}
 宿主保存的失败位置、分类和缓存响应预诊断如下；先用它缩小范围，不要盲目通读代码库：
 {json.dumps(failure_context, ensure_ascii=False, indent=2)}
+上面的宿主摘要已经是本次任务的全部必需上下文。不得用 Get-ChildItem/dir/ls/Get-Content 或复合 PowerShell 命令再列举工作区；这些动作会被安全策略拒绝。
+首个工具调用必须是单条 Python 命令 `python inspect_live_page.py "<当前分类 URL>"`，禁止使用管道、重定向、分号或在同一命令中附加其他动作。之后用 apply_patch 直接写第一版脚本；仅允许执行单条 Python 脚本/单行命令，不得启动 PowerShell 探索。
 先核对 failure context 与 sample_scope.json。若预诊断为 CSR/SPA，探索严格限制为两步且每步只执行一次：
 1. 直接运行 python inspect_live_page.py "<attempted_category_urls 中的当前 URL>"，将标准输出保存为 live_page_summary.json；
 2. 用一个短 Python 脚本只打印 evidence/sniffed-*.json 的文件名、顶层 keys、列表长度及首个对象的 keys/短样例，禁止全文打印大 JSON。
@@ -392,8 +394,8 @@ def _prompt(reason, work):
 
 
 def _command(executable, work):
-    command = [executable, 'exec', '--ignore-user-config', '--ignore-rules',
-               '--skip-git-repo-check', '--ephemeral', '--approve-for-me',
+    command = [executable, 'exec', '--ignore-rules',
+               '--skip-git-repo-check', '--ephemeral', '--approve-for-me', '--trust',
                '--enable', 'code_mode', '--enable', 'code_mode_host',
                '-c', 'sandbox_workspace_write.network_access=true',
                '-c', 'model_reasoning_effort=medium', '-c', 'web_search=disabled',

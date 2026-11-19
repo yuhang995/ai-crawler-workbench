@@ -16,7 +16,8 @@ FEED_PAGE_SIZE = 50
 def _large_document_get(client, url):
     """Use the large-page budget while retaining simple test/client adapters."""
     try:
-        return client.get(url, attempts=2, timeout=60)
+        # Exhaust the three configured fingerprints: Firefox -> Chrome -> Safari.
+        return client.get(url, attempts=3, timeout=60)
     except TypeError as error:
         if 'unexpected keyword argument' not in str(error):
             raise
@@ -61,7 +62,7 @@ def _rescue_listing_scopes(root_doc):
 
 
 def handle(url):
-    match = re.search(r'/products/([^/?#]+)', urlsplit(url).path)
+    match = re.search(r'/products?/([^/?#]+)', urlsplit(url).path)
     if not match:
         return ''
     value = unquote(match[1]).strip()
@@ -157,11 +158,12 @@ def react_router_payloads(html):
 
 def _hydrogen_route(html, kind):
     param = '(?:handle|collectionHandle)' if kind == 'collections' else '(?:handle|productHandle)'
+    kind_pattern = 'products?' if kind == 'products' else re.escape(kind)
     # React Router IDs use either dotted Remix form
     # ``routes/collections.$handle`` or directory form
     # ``routes/collections/$handle/index``.
     pattern = re.compile(
-        rf'(?:^|[/.]){re.escape(kind)}(?:[./])\${param}(?:$|[./])')
+        rf'(?:^|[/.]){kind_pattern}(?:[./])\${param}(?:$|[./])')
     for payload in react_router_payloads(html):
         loader = payload.get('loaderData', {})
         if not isinstance(loader, dict):
@@ -473,6 +475,13 @@ def _combined_hydrogen_product(route, expected_handle):
 def hydrogen_product_from_html(html, expected_handle=''):
     """Normalize one server-rendered Hydrogen product, preserving real variants."""
     route = _hydrogen_route(html, 'products')
+    page_data = route.get('productPageData') if isinstance(route, dict) else None
+    if isinstance(page_data, dict):
+        data = page_data.get('data')
+        query_data = data.get('productQuery') if isinstance(data, dict) else None
+        embedded = query_data.get('product') if isinstance(query_data, dict) else None
+        if isinstance(embedded, dict):
+            route = dict(route, product=embedded)
     if isinstance(route.get('rootProduct'), dict) and route['rootProduct'].get('childProducts'):
         return _combined_hydrogen_product(route, expected_handle)
     mapped = route.get('mappedProduct') if isinstance(route, dict) else None
@@ -689,6 +698,87 @@ def _render_hydrogen_cursor_pages(url, first_html):
 
 def _hydrogen_collection_page(html, url, router_response=None):
     route = _cursor_route(router_response, url) if router_response else _hydrogen_route(html, 'collections')
+    if not route and not router_response:
+        requested_path = urlsplit(url).path.rstrip('/') or '/'
+        for payload in react_router_payloads(html):
+            loader = payload.get('loaderData', {})
+            if not isinstance(loader, dict):
+                continue
+            for candidate in loader.values():
+                data = candidate.get('productsListingPageData') if isinstance(candidate, dict) else None
+                if not isinstance(data, dict):
+                    continue
+                page_url = str(data.get('pageUrl') or '')
+                if (urlsplit(page_url).path.rstrip('/') or '/') == requested_path:
+                    route = data
+                    break
+            if route:
+                break
+    # Modern Hydrogen storefronts can expose a presentation-ready PLP payload
+    # on arbitrary public routes (/ties, /whats-new, /c/*).  Accept it only
+    # when the page URL, numeric Shopify identities, USD market and public card
+    # URLs all agree with the requested server-rendered document.
+    if (isinstance(route, dict) and isinstance(route.get('products'), list)
+            and isinstance(route.get('pagination'), dict) and route.get('pageUrl')):
+        market = hydrogen_market(html)
+        if market.get('currency') != 'USD' or market.get('country') != 'US':
+            raise CrawlError('Hydrogen 顶级分类市场不是 US/USD')
+        requested = urlsplit(url)
+        page_target = urlsplit(str(route['pageUrl']))
+        if ((page_target.path.rstrip('/') or '/') != (requested.path.rstrip('/') or '/')
+                or page_target.netloc not in ('', requested.netloc)):
+            raise CrawlError('Hydrogen 顶级分类页面身份不一致')
+        handles, products = [], []
+        for card in route['products']:
+            if not isinstance(card, dict):
+                continue
+            slug = str(card.get('handle') or '')
+            product_id = str(card.get('product_id') or card.get('id') or '')
+            variant_id = str(card.get('variant_id') or '')
+            target = urljoin(url, str(card.get('url') or ''))
+            target_parts = urlsplit(target)
+            try:
+                Decimal(str(card.get('price')))
+            except (InvalidOperation, TypeError, ValueError):
+                raise CrawlError('Hydrogen 顶级分类商品价格无效')
+            if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', slug)
+                    or not product_id.isdigit() or not variant_id.isdigit()
+                    or target_parts.scheme != requested.scheme
+                    or target_parts.netloc != requested.netloc
+                    or handle(target) != slug):
+                raise CrawlError('Hydrogen 顶级分类商品身份或链接无效')
+            if slug in handles or any(item['id'] == product_id for item in products):
+                raise CrawlError('Hydrogen 顶级分类出现重复父商品')
+            handles.append(slug)
+            products.append({'id': product_id, 'handle': slug, 'url': target,
+                             'variants': [], '_hydrogen_partial': True})
+        pagination = route['pagination']
+        try:
+            current_page = int(pagination['currentPage'])
+            total_results = int(pagination['totalResults'])
+        except (KeyError, TypeError, ValueError) as error:
+            raise CrawlError('Hydrogen 顶级分类分页底账无效') from error
+        if not products or current_page < 1 or total_results < len(products):
+            raise CrawlError('Hydrogen 顶级分类分页数量矛盾')
+        page_size = len(products)
+        raw_next = pagination.get('nextPage')
+        if raw_next in (None, '', False):
+            has_next_page = False
+            total_pages = current_page
+        else:
+            try:
+                next_page = int(raw_next)
+            except (TypeError, ValueError) as error:
+                raise CrawlError('Hydrogen 顶级分类下一页标记无效') from error
+            if next_page != current_page + 1:
+                raise CrawlError('Hydrogen 顶级分类分页未连续推进')
+            has_next_page = True
+            total_pages = next_page
+        return {'handles': handles, 'products': products,
+                'current_page': current_page, 'total_pages': total_pages,
+                'total_results': total_results, 'page_size': page_size,
+                'has_next_page': has_next_page,
+                'end_cursor': '', 'pagination_kind': 'page'}
     collection = route.get('collection') if isinstance(route, dict) else None
     # Some Hydrogen route loaders return the collection object itself instead
     # of wrapping it as ``{"collection": ...}``.
@@ -1172,7 +1262,18 @@ class RenderedPages(dict):
 
 def verify_listing_location(actual_url,requested_url):
     actual,requested=urlsplit(actual_url),urlsplit(requested_url)
-    if actual.hostname!=requested.hostname or actual.path.rstrip('/')!=requested.path.rstrip('/'):
+    same_path = actual.path.rstrip('/') == requested.path.rstrip('/')
+    # Shopify commonly canonicalizes an obsolete collection handle (and tag
+    # child paths) to another real collection URL.  That remains inside the
+    # requested catalog and must not turn an otherwise valid full-store run
+    # into a hard failure.  Cross-domain and non-collection redirects remain
+    # blocked, while filter/sort preservation is still checked below.
+    collection_redirect = (
+        actual.hostname == requested.hostname
+        and re.fullmatch(r'/collections/[^/]+(?:/[^/]+)?/?', actual.path)
+        and re.fullmatch(r'/collections/[^/]+(?:/[^/]+)?/?', requested.path)
+    )
+    if actual.hostname!=requested.hostname or (not same_path and not collection_redirect):
         raise CrawlError('商品列表跳离请求分类')
     before,after=parse_qs(requested.query),parse_qs(actual.query)
     for key,values in before.items():
@@ -1181,16 +1282,26 @@ def verify_listing_location(actual_url,requested_url):
 
 
 def goto_listing(page,url,warnings):
-    from playwright.sync_api import TimeoutError as BrowserTimeout
-    try:page.goto(url,wait_until='commit',timeout=12000)
-    except BrowserTimeout:
-        requested,actual=urlsplit(url),urlsplit(page.url)
-        if (requested.hostname!=actual.hostname or requested.path.rstrip('/')!=actual.path.rstrip('/') or requested.query!=actual.query
-                or not page.locator('main a[href*="/products/"]:visible').count()):raise
-        # A loaded same-collection grid is subsequently checked against feed
-        # identities, pagination, filters and market. Timeout alone is not success.
-        warnings.append({'code':'listing_load_timeout','message':'列表页加载事件超时，但同路径真实商品网格已渲染；继续核对源响应','url':url})
-        return
+    from playwright.sync_api import TimeoutError as BrowserTimeout, Error as BrowserError
+    for attempt in range(3):
+        try:
+            page.goto(url,wait_until='commit',timeout=12000)
+            break
+        except BrowserTimeout:
+            requested,actual=urlsplit(url),urlsplit(page.url)
+            if (requested.hostname!=actual.hostname or requested.path.rstrip('/')!=actual.path.rstrip('/') or requested.query!=actual.query
+                    or not page.locator('main a[href*="/products/"]:visible').count()):raise
+            # A loaded same-collection grid is subsequently checked against feed
+            # identities, pagination, filters and market. Timeout alone is not success.
+            warnings.append({'code':'listing_load_timeout','message':'列表页加载事件超时，但同路径真实商品网格已渲染；继续核对源响应','url':url})
+            return
+        except BrowserError as error:
+            transient = any(marker in str(error) for marker in (
+                'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_RESET',
+                'ERR_NETWORK_CHANGED', 'ERR_TIMED_OUT'))
+            if not transient or attempt == 2:
+                raise
+            page.wait_for_timeout(500 * (attempt + 1))
     try:
         page.locator('main a[href*="/products/"]').first.wait_for(timeout=12000)
     except BrowserTimeout:
@@ -1361,7 +1472,7 @@ def resolve_landing_membership(client, html, url):
         return products, [], cards
 
 
-def collect_listing(client, url, out=None, full=True):
+def collect_listing(client, url, out=None, full=True, prefer_feed_order=False):
     start = time.perf_counter()
     parts = urlsplit(url)
     if '/products/' in parts.path and '/collections/' not in parts.path:
@@ -1371,7 +1482,35 @@ def collect_listing(client, url, out=None, full=True):
     # Some Shopify storefronts issue a bot/session cookie from the collection
     # response and reject a parallel products.json request that races ahead in
     # a different thread-local Client session.
-    response = _large_document_get(client, parts._replace(fragment='').geturl())
+    is_collection_path = '/collections/' in parts.path
+    collection_tail = (parts.path.split('/collections/', 1)[1].strip('/').split('/')
+                       if is_collection_path else [])
+    tag_scoped = len(collection_tail) > 1
+    query_scoped = any(key != 'page' for key in parse_qs(parts.query))
+    feed_only_allowed = bool(prefer_feed_order and not tag_scoped and not query_scoped)
+    early_warnings = []
+    try:
+        response = _large_document_get(client, parts._replace(fragment='').geturl())
+    except CrawlError as error:
+        if not feed_only_allowed:
+            raise
+        response = type('FeedOnlyCollectionResponse', (), {'text': '', 'url': url})()
+        early_warnings.append({'code': 'listing_html_feed_only_fallback',
+            'message': '全量无筛选分类的 HTML 暂时不可用；继续使用 Shopify products.json 权威成员源',
+            'url': url, 'reason': str(error)})
+    # Hydrogen storefronts may expose real PLP routes such as /ties, /shirts
+    # or /c/polos-sweaters instead of Shopify's conventional /collections/*.
+    # They have no products.json endpoint derivable from the public route, so
+    # inspect the rendered/embedded Hydrogen payload before collection logic.
+    if not is_collection_path:
+        hydrogen = hydrogen_collection_listing(client, url, response.text, full=full)
+        if hydrogen is None:
+            raise AdapterRequired('Shopify Hydrogen 顶级分类路由缺少可验证商品数据')
+        if early_warnings:
+            hydrogen.setdefault('warnings', []).extend(early_warnings)
+        if out:
+            save_json(Path(out) / 'listing.json', hydrogen)
+        return hydrogen
     from .brumate_listing import is_nosto_grid, collect_listing as collect_nosto_grid
     if is_nosto_grid(response.text):
         listing = collect_nosto_grid(client, url, first_html=response.text, full=full)
@@ -1406,13 +1545,15 @@ def collect_listing(client, url, out=None, full=True):
     membership_sources, card_sources = [], []
     if not products and listing_dom(response.text, url)[0]:
         products, membership_sources, card_sources = resolve_landing_membership(client, response.text, url)
-    rendered = {}
+    rendered = RenderedPages() if early_warnings else {}
+    if early_warnings:
+        rendered.warnings.extend(early_warnings)
     query_values=parse_qs(parts.query)
     filters={k:v for k,v in query_values.items() if k.startswith('filter.')}
     # Any non-pagination query can alter the visible subset/order.  A public
     # collection feed does not prove those custom parameters, so it can never
     # be the sole order/range evidence for such URLs.
-    scoped=any(key != 'page' for key in query_values)
+    scoped=tag_scoped or any(key != 'page' for key in query_values)
     static_handles=[]
     feed_fallback=False
     initial_dynamic = False
@@ -1424,11 +1565,18 @@ def collect_listing(client, url, out=None, full=True):
         initial_slugs=[]
     if products and not initial_slugs:
         static_handles=embedded_product_handles(response.text,products,url)
-    if scoped or (products and not initial_slugs and not static_handles):
-        from playwright.sync_api import TimeoutError as BrowserTimeout
+    if prefer_feed_order and products and not scoped and not initial_slugs and not static_handles:
+        if not isinstance(rendered, RenderedPages):
+            rendered = RenderedPages()
+        rendered.warnings.append({'code': 'listing_order_feed_fallback',
+            'message': '全量采集使用已验证 products.json 成员与顺序，避免逐分类重复渲染前端网格',
+            'url': url, 'reason': 'full_store_feed_order'})
+        feed_fallback = True
+    elif scoped or (products and not initial_slugs and not static_handles):
+        from playwright.sync_api import TimeoutError as BrowserTimeout, Error as BrowserError
         try:
             rendered = rendered_listing_pages(url, full)
-        except (BrowserTimeout,AdapterRequired) as error:
+        except (BrowserError,AdapterRequired) as error:
             if scoped or len(products)<3:
                 raise
             rendered=RenderedPages()
@@ -1613,13 +1761,16 @@ def fetch_product(client, url, fallback=None):
     errors = []
     partial = bool((fallback or {}).get('_hydrogen_partial'))
     # Hydrogen cards link directly to the server-rendered PDP with its selected options.
-    ajax = () if partial else (('.json', 'json'), ('.js', 'js'))
+    shopify_origin = getattr(client, 'shopify_origin', '')
+    if not isinstance(shopify_origin, str):
+        shopify_origin = ''
+    ajax = (('.json', 'json'), ('.js', 'js')) if (not partial or shopify_origin) else ()
     parsed = urlsplit(url)
     for suffix, source in ajax:
-        endpoint_parts = parsed._replace(path=parsed.path.rstrip('/') + suffix, fragment='')
-        shopify_origin = getattr(client, 'shopify_origin', '')
-        if not isinstance(shopify_origin, str):
-            shopify_origin = ''
+        endpoint_path = parsed.path.rstrip('/') + suffix
+        if shopify_origin and re.search(r'/product/[^/]+$', parsed.path):
+            endpoint_path = '/products/' + handle(url) + suffix
+        endpoint_parts = parsed._replace(path=endpoint_path, fragment='')
         if shopify_origin:
             origin = urlsplit(shopify_origin)
             endpoint_parts = endpoint_parts._replace(scheme=origin.scheme, netloc=origin.netloc)
@@ -2154,6 +2305,11 @@ def run_products(root, all_products=False):
     if not urls:
         raise CrawlError('已审核范围没有可采集商品')
     client = Client()
+    detection_file = root / 'detection.json'
+    if detection_file.is_file():
+        detected_origin = read_json(detection_file).get('shopify_origin', '')
+        if isinstance(detected_origin, str) and detected_origin.startswith('https://'):
+            client.shopify_origin = detected_origin.rstrip('/')
     checkpoint_file = root / 'product_checkpoint.json'
     checkpoint = read_json(checkpoint_file) if checkpoint_file.is_file() else {}
     version = release['navigation_version'] + ':' + binding['sha256']

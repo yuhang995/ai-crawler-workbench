@@ -39,7 +39,7 @@ class CombinedProductTests(unittest.TestCase):
         client.get.return_value.text = stream({'loaderData': {'routes/products.$handle': grouped_route()}})
         sample = fetch_product(client, url, card)
         client.json.assert_not_called()
-        client.get.assert_called_once_with(url, attempts=2, timeout=60)
+        client.get.assert_called_once_with(url, attempts=3, timeout=60)
         self.assertEqual([v['sku'] for v in sample['product']['variants']], ['SKU-2', 'SKU-3'])
         with self.assertRaisesRegex(CrawlError, '身份与分类卡片不一致'):
             fetch_product(client, url, dict(card, id='999'))

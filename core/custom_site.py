@@ -27,8 +27,9 @@ STOREFRONT_MODULES = {
     'bigcommerce_storefront': 'bigcommerce_storefront',
     'pinia_storefront': 'pinia_storefront',
     'mobify_storefront': 'mobify_storefront',
+    'jsonld_storefront': 'jsonld_storefront',
 }
-SUPPORTED_PLATFORMS = {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify'}
+SUPPORTED_PLATFORMS = {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}
 
 
 def source_adapter(kind):
@@ -54,6 +55,9 @@ def identify_platform(html: str) -> str:
         return 'bigcommerce'
     if "pinia" in lower and ("__nuxt__" in lower or "_payload.json" in lower or 'window.__initial_state__' in lower):
         return "pinia"
+    from .jsonld_storefront import supports_home
+    if supports_home(html):
+        return 'jsonld'
     return ""
 
 
@@ -139,7 +143,7 @@ def _native_navigation(root, base, html, platform, client):
     elif platform == 'demandware':
         categories = demandware_navigation(html, base, client=client)
         scope = 'source_menu_level_attributes'
-    elif platform in {'magento', 'bigcommerce', 'pinia', 'mobify'}:
+    elif platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:
         adapter = source_adapter(platform + '_storefront')
         categories = adapter.navigation(html, base, client=client, evidence_dir=root / 'evidence')
         scope = 'source_navigation_and_homepage'
@@ -486,7 +490,7 @@ def _collectors(platform):
         return collect_listing, braun_product
     if platform == 'demandware':
         return demandware_listing, demandware_product
-    if platform in {'magento', 'bigcommerce', 'pinia', 'mobify'}:
+    if platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:
         adapter = source_adapter(platform + '_storefront')
         return adapter.collect_listing, adapter.fetch_product
     raise CrawlError('没有已配置的自建站商品适配器: ' + str(platform))
@@ -552,11 +556,17 @@ def _preserve_product_source(root, sample):
         reference['file'] = copied[relative]
 
 
-def _distinct_samples(client, root, product, urls, cache, limit):
+def _distinct_samples(client, root, product, urls, cache, limit, skipped=None):
     samples, parents = [], set()
     for url in dict.fromkeys(urls):
         if url not in cache:
-            sample = product(client, url, root / 'evidence')
+            try:
+                sample = product(client, url, root / 'evidence')
+            except AdapterRequired as error:
+                if skipped is None:
+                    raise
+                skipped.append({'url': url, 'reason': str(error)})
+                continue
             if sample.get('url') != url or not sample.get('product', {}).get('id'):
                 raise CrawlError('商品卡片响应缺少对应的真实父商品身份')
             _preserve_product_source(root, sample)
@@ -587,7 +597,7 @@ def _attach_identity_sources(detail, listings, cache):
 
 
 def _native_identity(platform, url):
-    if platform in {'magento', 'bigcommerce', 'pinia', 'mobify'}:
+    if platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:
         return True
     if platform == 'demandware':
         from .sfcc_storefront import supports
@@ -646,7 +656,22 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
                 raise
     urls = list(dict.fromkeys(u for links in detail.values() for u in links))
     if native and all_categories:
-        samples = _distinct_samples(client, root, product, urls, cache, None if full_products else 3)
+        skipped_products = []
+        samples = _distinct_samples(client, root, product, urls, cache,
+                                    None if full_products else 3,
+                                    skipped_products if full_products else None)
+        if skipped_products:
+            skipped_urls = {item['url'] for item in skipped_products}
+            for key in list(detail):
+                detail[key] = [url for url in detail[key] if url not in skipped_urls]
+                listing = listings[key]
+                original_listing_urls = set(listing.get('urls', []))
+                listing['urls'] = [url for url in listing.get('urls', []) if url not in skipped_urls]
+                listing['catalog_urls'] = [url for url in listing.get('catalog_urls', [])
+                                           if url not in skipped_urls]
+                listing['excluded_urls'] = sorted(
+                    set(listing.get('excluded_urls', [])) & skipped_urls
+                    | (original_listing_urls & skipped_urls))
     elif not native:
         samples = [product(client, value, root / 'evidence')
                    for value in (urls if full_products else urls[:3])]
@@ -661,6 +686,8 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
     save_json(root / 'sample_attempts.json', attempts)
     warnings_path = root / 'warnings.json'
     warnings = read_json(warnings_path) if warnings_path.is_file() else []
+    for item in locals().get('skipped_products', []):
+        warnings.append({'code': 'unavailable_product_pruned', **item})
     for sample in samples:
         for warning in sample['product'].get('warnings', []):
             entry = {'product_url': sample['url'], **warning} if isinstance(warning, dict) else {

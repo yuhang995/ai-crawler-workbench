@@ -147,7 +147,21 @@ def verify_source_mapping(root, sample):
                                          if str(item).strip()), observed)
                     except (ValueError, TypeError, AttributeError):
                         pass
-                if name not in fields or str(observed) != str(value):
+                elif transforms.get(name) == 'woocommerce_minor_units':
+                    try:
+                        from decimal import Decimal
+                        minor = int(pointer(raw_variant, '/prices/currency_minor_unit'))
+                        observed = Decimal(str(observed)) / (Decimal(10) ** minor)
+                    except (ValueError, TypeError, KeyError, IndexError):
+                        pass
+                if transforms.get(name) == 'woocommerce_minor_units':
+                    try:
+                        mismatch = Decimal(str(observed)) != Decimal(str(value))
+                    except (ValueError, TypeError):
+                        mismatch = True
+                else:
+                    mismatch = str(observed) != str(value)
+                if name not in fields or mismatch:
                     raise CrawlError('规范化变体字段与源响应不一致: ' + name)
     paths = mapping.get('image_paths', [])
     if not paths:
@@ -236,7 +250,7 @@ def validate_navigation(categories, documents, base, evidence=None):
         raise CrawlError('目录遗漏当前菜单或首页分类')
 
 
-def validate_samples(detail, samples, listings, rows, full=False):
+def validate_samples(detail, samples, listings, rows, full=False, root=None):
     from .custom_site import ordered_product_urls
     expected_urls = ordered_product_urls(detail, listings)
     if not full:
@@ -279,6 +293,25 @@ def validate_samples(detail, samples, listings, rows, full=False):
         if listing.get('format') == 'custom':
             if [canonical(u) for u in links] != custom_front_order(listing):
                 raise CrawlError('非标商品顺序与页面不一致')
+            continue
+        if listing.get('format') == 'woocommerce-store-api-json':
+            observed = []
+            page_size = 100
+            page_rows = []
+            for relative in listing.get('pages', []):
+                file = (root / relative).resolve()
+                if not _is_relative_to(file, (root / 'evidence').resolve()):
+                    raise CrawlError('WooCommerce 列表源响应必须位于 evidence')
+                rows_from_page = read_json(file)
+                if not isinstance(rows_from_page, list):
+                    raise CrawlError('WooCommerce 列表源响应不是数组')
+                page_rows.append(rows_from_page)
+                observed.extend(str(row.get('permalink', '')) for row in rows_from_page
+                                if isinstance(row, dict) and row.get('permalink'))
+            if not page_rows or len(page_rows[-1]) >= page_size:
+                raise CrawlError('WooCommerce 列表分页证据不完整')
+            if [canonical(u) for u in links] != [canonical(u) for u in observed]:
+                raise CrawlError('WooCommerce 商品列表与 Store API 顺序或范围不一致: ' + key)
             continue
         if listing.get('format') == 'hydrogen':
             from .shopify_fastpath import _hydrogen_collection_page
@@ -625,7 +658,7 @@ def validate(root):
     if scope_path.is_file() and read_json(scope_path).get('detail_scope') == 'pending':
         raise CrawlError('只有列表完成，商品采集尚未执行')
     full = scope_path.is_file() and read_json(scope_path).get('detail_scope') == 'all_products'
-    result = validate_samples(detail, samples, listings, rows, full=full)
+    result = validate_samples(detail, samples, listings, rows, full=full, root=root)
     with (root / 'result_clean.csv').open(encoding='utf-8-sig', newline='') as f:
         cleaned = list(csv.DictReader(f))
     if cleaned != rows:

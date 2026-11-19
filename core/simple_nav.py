@@ -1767,7 +1767,12 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
                        '-c', 'model_reasoning_effort=medium', '-c', 'web_search=disabled', '-c', 'mcp_servers={}',
                        '--output-schema', str(sandbox / 'schema.json'), '-o', str(sandbox / 'result.json'), '-C', temp]
             if self_heal:
+                # Codex 0.170+ keeps untrusted ephemeral directories effectively
+                # read-only even with automatic approval.  Trust is scoped to
+                # this disposable parser sandbox; project rules remain ignored.
+                command.remove('--ignore-user-config')
                 command += ['--approve-for-me',
+                            '--trust',
                             '-c', 'sandbox_workspace_write.network_access=false',
                             '-c', 'shell_environment_policy.inherit=none',
                             '--enable', 'code_mode', '--enable', 'code_mode_host']
@@ -1877,8 +1882,20 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
             primary_roots = coverage.get('primary_root_bar', [])
             initial_output_roots = {key.split(',', 1)[0].strip().casefold()
                                     for key in categories}
+            # Some desktop mega menus render the root trigger and every open
+            # panel column in one flat flex row.  In that markup even the
+            # ``primary_root_bar`` detector contains dozens of leaf labels
+            # (REEF is a representative case), so its mere presence does not
+            # make the ledger authoritative.  High URL coverage plus a bounded
+            # AI hierarchy is stronger evidence when both raw ledgers are
+            # plainly leaf-heavy.
+            root_bar_leaf_heavy = (
+                len(primary_roots) >= 20
+                and len(source_roots) >= max(
+                    20, len(coverage.get('outline_roots', [])) * 2)
+            )
             leaf_ledger_unreliable = (
-                not primary_roots
+                (not primary_roots or root_bar_leaf_heavy)
                 and initial_output_coverage >= .90
                 and len(source_roots) >= 20
                 and 2 <= len(initial_output_roots) <= 32

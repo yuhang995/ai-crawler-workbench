@@ -278,6 +278,7 @@ class Client:
         self.browser_cookies = []
         self.browser_user_agents = {}
         self.recovery_attempted_domains = set()
+        self.fingerprint_indexes = {}
 
     @classmethod
     def domain_lock(cls, hostname):
@@ -285,7 +286,9 @@ class Client:
             return cls._domain_locks.setdefault(hostname.casefold(), threading.Lock())
 
     def _new_session(self, hostname=None):
-        options = {'impersonate': 'firefox'}
+        fingerprints = ('firefox', 'chrome', 'safari15_5')
+        index = self.fingerprint_indexes.get(hostname, 0) if hostname else 0
+        options = {'impersonate': fingerprints[index % len(fingerprints)]}
         if self.proxy:
             options['proxy'] = self.proxy
         session = requests.Session(**options)
@@ -309,6 +312,26 @@ class Client:
             # Preserve the historical attribute for callers/tests which
             # intentionally inspect or replace the current thread's session.
             self.local.session = session
+        return session
+
+    def _reset_session(self, hostname, rotate=False):
+        """Replace one thread-local transport session after a transient block."""
+        sessions = getattr(self.local, 'sessions', None)
+        if sessions is None:
+            sessions = self.local.sessions = {}
+        previous = sessions.pop(hostname, None)
+        if previous is None and getattr(self.local, 'session', None) is not None:
+            previous = self.local.session
+        try:
+            if previous is not None:
+                previous.close()
+        except Exception:
+            pass
+        if rotate:
+            self.fingerprint_indexes[hostname] = self.fingerprint_indexes.get(hostname, 0) + 1
+        session = self._new_session(hostname)
+        sessions[hostname] = session
+        self.local.session = session
         return session
 
     def _state_path(self, hostname):
@@ -394,14 +417,17 @@ class Client:
 
     def warm_browser_session(self, url):
         """Warm an ordinary public browser session; never solve a challenge."""
-        from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+        from playwright.sync_api import (sync_playwright, TimeoutError as BrowserTimeout,
+                                         Error as BrowserError)
         parsed = urlsplit(public_url(url))
         hostname = parsed.hostname.casefold()
         with self.domain_lock(hostname):
-            with self.lock:
-                if hostname in self.recovery_attempted_domains:
-                    raise CrawlError('该域名的一次浏览器会话恢复已经失败')
-                self.recovery_attempted_domains.add(hostname)
+            # The recovery budget is already bounded to once per individual
+            # Client.get() call by its local ``recovered`` flag.  Do not burn a
+            # permanent domain-wide token after a successful warm-up: long
+            # full-store jobs can legitimately need to refresh the session
+            # again hundreds of requests later.  The domain lock still keeps
+            # browser recovery serial and prevents concurrent browser storms.
             with sync_playwright() as pw:
                 browser = None
                 try:
@@ -423,7 +449,18 @@ class Client:
                         raise CrawlError('浏览器打开公开页面超时') from error
                     if urlsplit(page.url).hostname != parsed.hostname:
                         raise CrawlError('浏览器恢复跳转到不同站点')
-                    html = page.content()
+                    html = None
+                    for content_attempt in range(3):
+                        try:
+                            html = page.content()
+                            break
+                        except BrowserError as error:
+                            navigating = 'page is navigating' in str(error).casefold()
+                            if not navigating or content_attempt == 2:
+                                raise
+                            page.wait_for_timeout(500 * (content_attempt + 1))
+                    if html is None:
+                        raise CrawlError('浏览器恢复页面未稳定')
                     marker = type('BrowserResponse', (), {
                         'headers': response.headers if response else {'content-type': 'text/html'},
                         'status_code': response.status if response else 0,
@@ -472,6 +509,35 @@ class Client:
                         r = session.get(target, timeout=self.timeout if timeout is None else timeout,
                                         allow_redirects=False, **request_options)
                         challenged = is_access_challenge_response(r)
+                    json_endpoint = urlsplit(target).path.casefold().endswith(('.json', '.js'))
+                    if challenged and json_endpoint:
+                        # A JSON endpoint cannot be meaningfully completed in
+                        # a visible browser tab.  Shopify/CDN interstitials on
+                        # these endpoints are commonly short-lived during long
+                        # collection sweeps.  Cool down, rotate the curl_cffi
+                        # session and replay within the existing bounded attempt
+                        # budget; never misroute this shape to manual CAPTCHA.
+                        if attempt + 1 == attempts:
+                            raise CrawlError('HTTP Error 403: JSON 接口持续返回短暂验证页: ' + target)
+                        self.backoff(min(8.0, 2.0 * (attempt + 1)))
+                        session = self._reset_session(hostname, rotate=True)
+                        continue
+                    if challenged and attempt + 1 < attempts:
+                        # A challenge can be fingerprint-specific rather than
+                        # an interactive block.  Rotate curl_cffi first
+                        # (Firefox -> Chrome -> Safari); only the final bounded
+                        # attempt may escalate an HTML page to browser/manual
+                        # confirmation.
+                        self.backoff(min(8.0, 2.0 * (attempt + 1)))
+                        session = self._reset_session(hostname, rotate=True)
+                        continue
+                    if r.status_code == 403 and json_endpoint:
+                        # Let the ordinary curl retry loop rotate sessions.  If
+                        # all bounded attempts remain 403, Client.json() owns
+                        # the one browser_json recovery, which opens the human
+                        # collection page and performs same-origin fetch.  Never
+                        # page.goto() a raw JSON endpoint here.
+                        r.raise_for_status()
                     if challenged or r.status_code == 403:
                         if recovered:
                             if challenged:
@@ -508,7 +574,9 @@ class Client:
                     if attempt + 1 == attempts:
                         raise CrawlError(f'请求失败 {target}: {e}') from e
                     # Immediate retries tend to hit the same transient reset;
-                    # a short bounded pause is enough without slowing success.
+                    # replace the failed connection pool and rotate the browser
+                    # fingerprint before the bounded replay.
+                    session = self._reset_session(hostname, rotate=True)
                     time.sleep(0.5 * (attempt + 1))
             if r.status_code in (301, 302, 303, 307, 308):
                 from urllib.parse import urljoin
@@ -550,7 +618,7 @@ class Client:
             raise CrawlError('接口未返回 JSON: ' + url) from e
 
     def browser_json(self, url):
-        from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+        from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout, Error as BrowserError
         parsed = urlsplit(url)
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
@@ -567,11 +635,29 @@ class Client:
                     landing = parsed._replace(path=path[:-len('/products.json')], query='', fragment='').geturl()
                 else:
                     landing = parsed._replace(path=path.removesuffix('.json').removesuffix('.js'), query='', fragment='').geturl()
-                try:
-                    page.goto(landing, wait_until='commit', timeout=10000)
-                    page.locator('a[href*="/products/"]').first.wait_for(state='attached', timeout=3000)
-                except BrowserTimeout:
-                    pass
+                for attempt in range(3):
+                    try:
+                        page.goto(landing, wait_until='commit', timeout=10000)
+                        try:
+                            page.locator('a[href*="/products/"]').first.wait_for(state='attached', timeout=3000)
+                        except BrowserTimeout:
+                            pass
+                        break
+                    except BrowserTimeout:
+                        # A committed collection document is enough for the
+                        # same-origin fetch below; only retry a completely
+                        # blank navigation.
+                        if page.url and page.url != 'about:blank':
+                            break
+                        if attempt == 2:
+                            break
+                    except BrowserError as error:
+                        transient = any(marker in str(error) for marker in (
+                            'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_RESET',
+                            'ERR_NETWORK_CHANGED', 'ERR_TIMED_OUT'))
+                        if not transient or attempt == 2:
+                            raise
+                    page.wait_for_timeout(500 * (attempt + 1))
                 if urlsplit(page.url).netloc != parsed.netloc:
                     raise CrawlError('浏览器分类页未进入同源站点: ' + landing)
                 result = page.evaluate("""async u => {

@@ -135,6 +135,7 @@ def detect_catalog_only(client, base, categories, evidence_dir=None, max_product
     ordered = list(dict.fromkeys(categories.values()))
     ordered.sort(key=lambda value: urlsplit(value).path.rstrip('/').lower() != '/products')
     checked_listings = []
+    family_pages = []
     for listing_url in ordered[:8]:
         response = client.get(listing_url, timeout=20, attempts=1)
         links = _product_links(response.text, response.url, base)
@@ -144,6 +145,23 @@ def detect_catalog_only(client, base, categories, evidence_dir=None, max_product
         checked_listings.append({'url': response.url, 'product_links': links,
                                  'source': 'gatsby_page_data' if gatsby_source else 'html'})
         if len(links) < 3:
+            soup = parse_soup(response.text)
+            sku_links = []
+            for anchor in soup.select('a[href*="where-to-buy" i]'):
+                target = urljoin(response.url, anchor.get('href', ''))
+                parsed = urlsplit(target)
+                values = dict(parse_qsl(parsed.query, keep_blank_values=True))
+                sku = str(values.get('ps-sku', '')).strip()
+                if parsed.hostname == urlsplit(base).hostname and sku and sku not in sku_links:
+                    sku_links.append(sku)
+            evidence = _commerce_evidence(response.text)
+            if sku_links and not (evidence['prices'] or evidence['purchase_controls']):
+                family_pages.append({'url': response.url, 'ps_skus': sku_links, **evidence})
+                if evidence_dir is not None:
+                    directory = Path(evidence_dir)
+                    directory.mkdir(parents=True, exist_ok=True)
+                    (directory / f'catalog-only-family-{len(family_pages) - 1}.html').write_text(
+                        response.text, encoding='utf-8')
             continue
         products = []
         has_commerce = False
@@ -167,6 +185,12 @@ def detect_catalog_only(client, base, categories, evidence_dir=None, max_product
             'reason': ('public_product_pages_without_price_or_purchase_variants'
                        if not has_commerce else 'commerce_evidence_present'),
         }
+    if len(family_pages) >= 3:
+        return {'catalog_only': True, 'listing_url': family_pages[0]['url'],
+                'listing_urls': [item['url'] for item in family_pages],
+                'product_links': [item['url'] for item in family_pages],
+                'checked_products': family_pages, 'listing_source': 'product_family_pages',
+                'reason': 'where_to_buy_product_families_without_public_prices'}
     return {'catalog_only': False, 'checked_listings': checked_listings,
             'reason': 'no_three_product_catalog_listing'}
 
@@ -175,7 +199,9 @@ def _regions(soup, base):
     # The product nav can be a sibling of a utility-only header. Prefer the
     # semantic nav itself, including panels it explicitly controls.
     candidates = [node for node in soup.select(
-        'nav,[role="navigation"],[role="menubar"],header ul[class*="nav"][class*="list"],header ul#primaryNav')
+        'nav,[role="navigation"],[role="menubar"],'
+        'header ul[class*="nav"][class*="list"],header ul#primaryNav,'
+        '[id="header"] ul,[class~="header"] ul,[data-testid*="header" i] ul')
                   if node.find_parent('footer') is None
                   and not _utility_region(node)]
     def count(node):
@@ -200,7 +226,14 @@ def _regions(soup, base):
                                 and not any(parent in selected for parent in panel.parents)):
                             panels.append(panel)
         return selected + panels
-    return soup.find_all('header') or []
+    # HTML5 allows content sections to use semantic <header> elements.  A
+    # single editorial/campaign link is not evidence of a storefront menu;
+    # requiring at least two catalog targets prevents homepage section titles
+    # from becoming the entire category JSON when the real React header is a
+    # div/custom component.
+    return [node for node in soup.find_all('header')
+            if sum(catalog_url(urljoin(base, anchor['href']), base)
+                   for anchor in node.select('a[href]')) >= 2]
 
 
 def _anchors(region):

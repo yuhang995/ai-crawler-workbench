@@ -8,6 +8,7 @@ from core.common import CrawlError
 from core.shopify_fastpath import (collect_listing,embedded_product_handles,
                                    goto_listing,RenderedPages,route_listing_assets)
 from core.validator import source_order
+from core.pipeline import compact_shopify_listing_evidence
 
 
 BASE='https://example.com/collections/shop'
@@ -28,6 +29,20 @@ class Client:
 
 
 class FeedOrderFallbackTests(unittest.TestCase):
+    def test_compact_full_store_evidence_retains_validator_identity_and_order(self):
+        products=[dict(product('a',1),body_html='x'*10000),
+                  dict(product('b',2),body_html='y'*10000),
+                  dict(product('c',3),body_html='z'*10000)]
+        listing={'url':BASE,'products':products,'urls':[],
+                 'warnings':[{'code':'listing_order_feed_fallback'}],
+                 'order_evidence':'products_feed_fallback','feed_page_size':50,
+                 'membership_sources':[],
+                 'feeds':[{'products':products}],
+                 'pages':[{'url':BASE,'handles':['a','b','c'],'html':'h'*50000}]}
+        compact=compact_shopify_listing_evidence(listing)
+        self.assertEqual(source_order(compact),['a','b','c'])
+        self.assertEqual(compact['pages'][0]['html'],'')
+        self.assertNotIn('body_html',compact['feeds'][0]['products'][0])
     def test_collection_html_warms_same_session_before_products_feed(self):
         products=[product('a',1),product('b',2),product('c',3)]
         html='<main id="product-grid">' + ''.join(
@@ -104,6 +119,34 @@ class FeedOrderFallbackTests(unittest.TestCase):
             result=collect_listing(Client('<main></main>',products),BASE)
         self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
         self.assertEqual(result['warnings'][0]['code'],'listing_order_feed_fallback')
+
+    def test_full_store_mode_uses_authoritative_feed_without_per_category_browser(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        with patch('core.shopify_fastpath.rendered_listing_pages',
+                   side_effect=AssertionError('browser called')):
+            result=collect_listing(
+                Client('<main></main>',products),BASE,
+                prefer_feed_order=True)
+        self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
+        self.assertEqual(result['order_evidence'],'products_feed_fallback')
+        self.assertEqual(result['warnings'][0]['reason'],'full_store_feed_order')
+
+    def test_full_store_mode_survives_collection_html_transport_failure(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        client=MagicMock()
+        client.get.side_effect=CrawlError('TLS connection closed')
+        client.json.return_value={'products':products}
+        result=collect_listing(client,BASE,prefer_feed_order=True)
+        self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
+        self.assertEqual(result['order_evidence'],'products_feed_fallback')
+        self.assertEqual(result['warnings'][0]['code'],'listing_html_feed_only_fallback')
+
+    def test_tag_scoped_collection_never_broadens_after_html_failure(self):
+        client=MagicMock()
+        client.get.side_effect=CrawlError('TLS connection closed')
+        with self.assertRaises(CrawlError):
+            collect_listing(client,BASE+'/sale',prefer_feed_order=True)
+        client.json.assert_not_called()
 
     def test_successful_render_without_cards_uses_unfiltered_feed_order(self):
         products=[product('a',1),product('b',2),product('c',3)]

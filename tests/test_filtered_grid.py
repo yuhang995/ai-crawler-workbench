@@ -15,6 +15,14 @@ class FilteredGridTests(unittest.TestCase):
   verify_listing_location(url+'&page=2',url)
   for actual in ['https://example.test/collections/tops','https://example.test/collections/tops?filter.color=blue&sort_by=manual']:
    with self.assertRaises(CrawlError):verify_listing_location(actual,url)
+ def test_same_domain_collection_canonical_redirect_is_allowed(self):
+  from core.shopify_fastpath import verify_listing_location
+  from core.common import CrawlError
+  verify_listing_location('https://example.test/collections/eyeshadow-palettes',
+                          'https://example.test/collections/palettes')
+  with self.assertRaises(CrawlError):
+   verify_listing_location('https://other.test/collections/eyeshadow-palettes',
+                           'https://example.test/collections/palettes')
  def test_collection_grid_excludes_same_collection_products_in_faq(self):
   html='<main><div id="CollectionGrid"><a href="/products/skinny-black">Skinny</a></div><text-accordion><a href="/products/slim-black">Slim FAQ</a></text-accordion></main>'
   self.assertEqual(listing_dom(html,'https://example.test/collections/jeans?filter.fit=Skinny')[0],['skinny-black'])

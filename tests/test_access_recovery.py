@@ -128,12 +128,74 @@ class AccessRecoveryTests(unittest.TestCase):
         warm.assert_called_once_with(BASE)
         self.assertEqual(session.get.call_count, 2)
 
+    def test_json_interstitial_rotates_curl_session_without_manual_browser(self):
+        client = Client()
+        challenged = response(text='<html><title>Verify you are human</title></html>')
+        allowed = response(text='{"products": []}')
+        allowed.headers['content-type'] = 'application/json'
+        first = MagicMock(); first.get.side_effect = [challenged, challenged]
+        second = MagicMock(); second.get.return_value = allowed
+        client.local.sessions = {'example.com': first}
+        client.local.session = first
+        with patch('core.common.time.sleep'), patch.object(client, 'pace'), patch.object(
+                client, '_new_session', return_value=second) as fresh, patch.object(
+                client, 'warm_browser_session') as warm:
+            actual = client.get(BASE + 'products.json', attempts=2)
+        self.assertIs(actual, allowed)
+        fresh.assert_called_once_with('example.com')
+        warm.assert_not_called()
+
+    def test_html_interstitial_rotates_fingerprint_before_manual_browser(self):
+        client = Client()
+        challenged = response(text='<html><title>Verify you are human</title></html>')
+        allowed = response(text='<html><title>Store</title><main>Products</main></html>')
+        first = MagicMock(); first.get.side_effect = [challenged, challenged]
+        second = MagicMock(); second.get.return_value = allowed
+        client.local.sessions = {'example.com': first}
+        client.local.session = first
+        with patch('core.common.time.sleep'), patch.object(client, 'pace'), patch.object(
+                client, '_new_session', return_value=second) as fresh, patch.object(
+                client, 'warm_browser_session') as warm:
+            actual = client.get(BASE, attempts=2)
+        self.assertIs(actual, allowed)
+        fresh.assert_called_once_with('example.com')
+        warm.assert_not_called()
+
+    def test_plain_json_403_uses_browser_json_not_page_goto_json(self):
+        client = Client()
+        denied = response(status=403, text='Request rejected')
+        first = MagicMock(); first.get.return_value = denied
+        second = MagicMock(); second.get.return_value = denied
+        third = MagicMock(); third.get.return_value = denied
+        client.local.sessions = {'example.com': first}
+        client.local.session = first
+        with patch.object(client, '_new_session', side_effect=[second, third]), patch(
+                'core.common.time.sleep'), patch.object(client, 'pace'), patch.object(
+                client, 'warm_browser_session') as warm, patch.object(
+                client, 'browser_json', return_value={'products': []}) as browser_json:
+            actual = client.json(BASE + 'products.json')
+        self.assertEqual(actual, {'products': []})
+        warm.assert_not_called()
+        browser_json.assert_called_once_with(BASE + 'products.json')
+
     def test_new_transport_prefers_firefox(self):
         session = MagicMock()
         with patch('core.common.requests.Session', return_value=session) as factory:
             actual = Client()._new_session('example.com')
         self.assertIs(actual, session)
         factory.assert_called_once_with(impersonate='firefox')
+
+    def test_transport_reset_rotates_browser_fingerprint(self):
+        client = Client()
+        previous = MagicMock()
+        client.local.sessions = {'example.com': previous}
+        client.local.session = previous
+        replacement = MagicMock()
+        with patch('core.common.requests.Session', return_value=replacement) as factory:
+            actual = client._reset_session('example.com', rotate=True)
+        self.assertIs(actual, replacement)
+        previous.close.assert_called_once()
+        factory.assert_called_once_with(impersonate='chrome')
 
 
 if __name__ == '__main__':

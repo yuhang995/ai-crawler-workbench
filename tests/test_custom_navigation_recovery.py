@@ -112,6 +112,24 @@ class CustomNavigationRecoveryTests(unittest.TestCase):
         self.assertEqual(result['product_links'], products)
         self.assertEqual(result['listing_source'], 'gatsby_page_data')
 
+    def test_where_to_buy_product_families_are_catalog_only(self):
+        pages = {f'Family {index}': BASE + f'family-{index}/' for index in range(4)}
+
+        class Client:
+            def get(self, url, **kwargs):
+                index = url.rstrip('/').rsplit('-', 1)[-1]
+                return SimpleNamespace(
+                    url=url,
+                    text=(f'<main><h1>Family {index}</h1>'
+                          f'<a href="/where-to-buy?ps-sku=SKU{index}">Where to Buy</a></main>'))
+
+        result = detect_catalog_only(Client(), BASE, pages)
+        self.assertTrue(result['catalog_only'])
+        self.assertEqual(result['listing_source'], 'product_family_pages')
+        self.assertEqual(result['listing_urls'], list(pages.values()))
+        self.assertTrue(all(not item['prices'] and not item['purchase_controls']
+                            for item in result['checked_products']))
+
     def test_ai_instructions_distinguish_product_index_from_product_details(self):
         self.assertIn('精确的 /products/ 商品中心首页', PROMPT)
         self.assertIn('精确 /products/', SELF_HEAL_PROMPT)
@@ -127,6 +145,21 @@ class CustomNavigationRecoveryTests(unittest.TestCase):
         self.assertIn('id="dog-panel"', source['navigation_html'])
         self.assertNotIn('/unrelated/', source['navigation_html'])
         self.assertNotIn('/footer-category/', source['navigation_html'])
+
+    def test_react_div_header_wins_over_editorial_semantic_headers(self):
+        html = (
+            '<div id="header"><ul class="menu">'
+            '<li><a href="/goods-list/70">Eyeglasses</a></li>'
+            '<li><a href="/goods-list/235">Sunglasses</a></li>'
+            '</ul></div>'
+            '<main><section><header><h2>Style Community</h2>'
+            '<a href="/campaigns/looks">Explore More</a></header></section></main>'
+            '<footer><nav aria-label="Footer"><a href="/goods-list/70">All</a></nav></footer>')
+        source = navigation_source(html, BASE)
+        self.assertEqual(source['valid_urls'], [
+            BASE + 'goods-list/70', BASE + 'goods-list/235'])
+        self.assertIn('<ul class="menu">', source['navigation_html'])
+        self.assertNotIn('/campaigns/looks', source['navigation_html'])
 
     def test_empty_candidate_fails_even_when_source_contains_no_catalog_links(self):
         for html, expected in [(menu_html(2), 2), ('<header>Menu</header>', 0)]:

@@ -195,6 +195,16 @@ class HydrogenFastpathTests(unittest.TestCase):
         self.assertEqual(found['mode'], 'hydrogen_shopify')
         self.assertTrue(found['market']['confirmed'])
 
+    def test_remix_context_market_is_not_skipped_by_detector(self):
+        html = collection_html().replace(
+            '__reactRouterContext.streamController.enqueue',
+            '__remixContext.streamController.enqueue')
+        self.assertEqual(observe_market(html), {
+            'countries': ['US'], 'currencies': ['USD'], 'confirmed': True})
+        found = detect(Client(), BASE, html, {'Shirts': BASE + 'collections/shirts'})
+        self.assertEqual(found['mode'], 'hydrogen_shopify')
+        self.assertTrue(found['market']['confirmed'])
+
     def test_hydrogen_listing_and_product_preserve_source_order_and_variants(self):
         client = Client()
         listing = collect_listing(client, BASE + 'collections/shirts')
@@ -211,6 +221,35 @@ class HydrogenFastpathTests(unittest.TestCase):
                          'https://cdn.example/red-shirt.jpg')
         self.assertEqual(hydrogen_product_from_html(
             sample['source_html'], 'red-shirt'), sample['product'])
+
+    def test_hydrogen_top_level_plp_does_not_assume_collections_path(self):
+        listing = collect_listing(Client(), BASE + 'whats-new')
+        self.assertEqual(listing['format'], 'hydrogen')
+        self.assertEqual([item['handle'] for item in listing['products']],
+                         ['red-shirt', 'blue-shirt', 'green-shirt'])
+
+    def test_presentation_plp_and_singular_product_route_are_supported(self):
+        cards = [{'id': str(100 + i), 'product_id': 100 + i,
+                  'variant_id': 1000 + i, 'handle': f'item-{i}',
+                  'url': f'/product/item-{i}', 'price': '28.00'}
+                 for i in range(3)]
+        listing_html = stream({'loaderData': {
+            'root': {'selectedLocale': {'country': 'US', 'currency': 'USD'}},
+            '/whats-new': {'productsListingPageData': {
+                'pageUrl': BASE + 'whats-new', 'products': cards,
+                'pagination': {'currentPage': 1, 'totalResults': 3}}}}})
+        class PresentationClient(Client):
+            def get(self, url):
+                return SimpleNamespace(text=listing_html, url=url)
+        listing = collect_listing(PresentationClient(), BASE + 'whats-new')
+        self.assertEqual(listing['urls'][0], BASE + 'product/item-0')
+        source = product('item-0', '100', 'Red', '1000')
+        detail_html = stream({'loaderData': {
+            'routes/($locale).product.$productHandle': {'productPageData': {
+                'data': {'productQuery': {'product': source}}}}}})
+        parsed = hydrogen_product_from_html(detail_html, 'item-0')
+        self.assertEqual(parsed['id'], '100')
+        self.assertEqual(parsed['variants'][0]['id'], '1000')
 
     def test_native_hydrogen_product_connection_is_valid_listing_evidence(self):
         class NativeClient(Client):
