@@ -19,3 +19,9 @@ kytebaby/
 /baseline-*.json
 /fixed-*.json
 /diagnostic_bundle.md
+/working_proxies.txt
+/discounted_shopify/
+/zip_verify_*/
+/all-failed-sites-*.csv
+/all-failed-sites-*.json
+/site-import-data-cleaner/

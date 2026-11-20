@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.common import AccessChallenge, CrawlError, save_json, read_json
-from core.pipeline import default_sample_candidates, retryable_sample_verification_error, run_job
+from core.pipeline import (default_sample_candidates, direct_shopify_product_scope,
+                           retryable_sample_verification_error, run_job)
 
 
 BASE = 'https://leaf.example'
@@ -29,6 +30,48 @@ def product(number):
 
 
 class LeafSelectionTests(unittest.TestCase):
+    def test_direct_shopify_product_scope_bypasses_listing_and_ai_repair(self):
+        direct = BASE + '/products/variety-pack'
+        categories = {'Shop All': direct}
+        detection = {
+            'mode': 'custom_site', 'shopify': True, 'custom_platform': '',
+            'provider': '', 'graphql_candidates': [], 'probes': [],
+            'market': {'countries': ['US'], 'currencies': ['USD'], 'confirmed': True},
+        }
+        self.assertTrue(direct_shopify_product_scope(detection, categories))
+
+        def navigation(root, base, html):
+            from core.simple_nav import publish_simple
+            publish_simple(root, categories, method='single_product_primary_navigation')
+            return categories, {'method': 'simple_nav', 'roots': []}, [html]
+
+        item = product(1)
+        item['handle'] = 'variety-pack'
+        sample = {'url': direct, 'source': 'json', 'endpoint': direct + '.json',
+                  'product': item}
+        with tempfile.TemporaryDirectory() as d, \
+             patch('core.pipeline.Client', Client), \
+             patch('core.detector.canonical_storefront', side_effect=lambda client, response: response), \
+             patch('core.simple_nav.run_simple', side_effect=navigation), \
+             patch('core.pipeline.detect', return_value=detection), \
+             patch('core.pipeline.collect_listing') as listing, \
+             patch('core.pipeline.fetch_product', return_value=sample) as fetched, \
+             patch('core.ai_repair.repair_sample') as repair, \
+             patch('core.pipeline.prepare_runtime'), \
+             patch('core.pipeline.validate', return_value={'passed': True}), \
+             patch('core.pipeline.package'):
+            report = run_job(BASE, d)
+            listings = read_json(Path(d) / 'listings.json')
+            detail = read_json(Path(d) / 'detail_url.json')
+
+        listing.assert_not_called()
+        repair.assert_not_called()
+        fetched.assert_called_once_with(unittest.mock.ANY, direct)
+        self.assertEqual(detail, {'Shop All': [direct]})
+        self.assertEqual(listings['Shop All']['format'], 'direct_product')
+        self.assertEqual(listings['Shop All']['feeds'][0]['products'], [item])
+        self.assertEqual(report['status'], 'completed')
+
     def test_configuration_only_sample_can_be_replaced(self):
         self.assertTrue(retryable_sample_verification_error(
             CrawlError('Hydrogen 配置型套装缺少独立可验证变体: /products/build-your-set')))

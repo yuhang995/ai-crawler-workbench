@@ -4,6 +4,7 @@ import ipaddress
 import json
 import mimetypes
 import secrets
+import shutil
 import socket
 import subprocess
 import threading
@@ -25,16 +26,48 @@ RUNS = ROOT / 'runs'
 JOBS = {}
 LOCK = threading.RLock()
 WORKERS = threading.Semaphore(4)
-APP_VERSION = '1.0.4'
+APP_VERSION = '1.0.5'
 MAX_PARALLEL_JOBS = 4
 MAX_BATCH_SITES = 20
-TERMINAL_STATES = {'completed', 'failed', 'interrupted', 'needs_recheck'}
+TERMINAL_STATES = {'completed', 'failed', 'interrupted', 'needs_recheck', 'cancelled'}
 STAGE_PROGRESS = {
     'queued': 2, 'detecting': 8, 'navigation': 18, 'navigation_check': 22,
     'navigation_ai': 25, 'navigation_fastpath': 30, 'navigation_targets': 35,
     'awaiting_confirmation': 35, 'listing': 48, 'ai': 55, 'ai_repair': 58,
     'products': 72, 'preview': 82, 'packaging': 92, 'completed': 100,
+    'cancelled': 0,
 }
+
+
+def cleanup_runs(keep_recent=30, job_id=None):
+    """Remove inactive run directories while never touching active jobs."""
+    keep_recent = int(keep_recent)
+    if not 0 <= keep_recent <= 1000:
+        raise ValueError('保留任务数必须在 0~1000 之间')
+    with LOCK:
+        active = {key for key, job in JOBS.items()
+                  if (job.get('status') not in TERMINAL_STATES
+                      or (job.get('worker_done') is not None
+                          and not job['worker_done'].is_set()))}
+        if job_id is not None:
+            if job_id in active:
+                raise CrawlError('运行中任务不能清理')
+            candidates = [RUNS / job_id] if (RUNS / job_id).is_dir() else []
+        else:
+            inactive = [path for path in RUNS.iterdir()
+                        if path.is_dir() and path.name not in active]
+            inactive.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+            candidates = inactive[keep_recent:]
+        removed = []
+        for path in candidates:
+            resolved = path.resolve()
+            if path.name in active or resolved.parent != RUNS.resolve():
+                continue
+            shutil.rmtree(path)
+            removed.append(path.name)
+            JOBS.pop(path.name, None)
+    return {'removed': removed, 'removed_count': len(removed),
+            'kept_recent': keep_recent}
 
 
 def _sites(value):
@@ -225,22 +258,30 @@ class LocalServer(ThreadingHTTPServer):
 
 def execute(job):
     with WORKERS:
-        def emit(event):
-            with LOCK:
-                job['events'].append(event)
-                job['status'] = event['stage']
-                job['progress'] = max(job.get('progress', 0),
-                                      int(event.get('progress', STAGE_PROGRESS.get(event['stage'], 0))))
-                if 'categories' in event:
-                    job['categories'] = event['categories']
-                if 'samples' in event:
-                    job['samples'] = event['samples']
-                save_json(RUNS / job['id'] / 'progress.json', snapshot(job))
         try:
+            cancel_event = job.get('cancel_event')
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            def emit(event):
+                with LOCK:
+                    if job.get('status') == 'cancelled' and event['stage'] != 'cancelled':
+                        return
+                    job['events'].append(event)
+                    job['status'] = event['stage']
+                    job['progress'] = max(job.get('progress', 0),
+                                          int(event.get('progress', STAGE_PROGRESS.get(event['stage'], 0))))
+                    if 'categories' in event:
+                        job['categories'] = event['categories']
+                    if 'samples' in event:
+                        job['samples'] = event['samples']
+                    save_json(RUNS / job['id'] / 'progress.json', snapshot(job))
             run_job(job['site'], RUNS / job['id'], manual=job['manual'], confirm=job['confirm'], emit=emit,
-                    category=job.get('category'), all_categories=job['all_categories'], force_ai=job['force_ai'], reuse_navigation=job.get('reuse_navigation',False), full_products=job.get('full_products',False), visual_check=job.get('visual_check',False), uploaded_categories=job.get('uploaded_categories'), proxy=job.get('proxy'))
+                    category=job.get('category'), all_categories=job['all_categories'], force_ai=job['force_ai'], reuse_navigation=job.get('reuse_navigation',False), full_products=job.get('full_products',False), visual_check=job.get('visual_check',False), uploaded_categories=job.get('uploaded_categories'), proxy=job.get('proxy'), use_proxy_pool=job.get('use_proxy_pool',False), cancel_event=cancel_event)
         except Exception:
             pass  # failure details are already persisted and emitted by the pipeline.
+        finally:
+            if job.get('worker_done') is not None:
+                job['worker_done'].set()
 
 
 def resume_after_access_confirmation(job):
@@ -263,8 +304,10 @@ def resume_after_access_confirmation(job):
 
 
 def snapshot(job):
-    result={k: v for k, v in job.items() if k not in {'confirm', 'uploaded_categories', 'proxy'}}
+    result={k: v for k, v in job.items() if k not in {'confirm', 'cancel_event', 'worker_done', 'uploaded_categories', 'proxy'}}
     result['proxy_display'] = redact_proxy(job.get('proxy'))
+    if job.get('use_proxy_pool'):
+        result['proxy_display'] = '代理池（密码已隐藏）'
     result['progress'] = _progress(job)
     if job.get('uploaded_categories') is not None:
         result['uploaded_category_count'] = len(job['uploaded_categories'])
@@ -371,6 +414,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('全自动全量模式不能同时启用手动确认')
                 uploaded_categories = body.get('uploaded_categories')
                 proxy = validate_proxy(body.get('proxy'))
+                use_proxy_pool = bool(body.get('use_proxy_pool', False)) and not proxy
                 if uploaded_categories is not None:
                     if body.get('manual'):
                         raise ValueError('手动放分类文件后无需再勾选手动确认目录范围')
@@ -397,8 +441,10 @@ class Handler(BaseHTTPRequestHandler):
                                'force_ai': bool(body.get('force_ai', False)),
                                'category': body.get('category') or None, 'submitter': submitter or None,
                                'uploaded_categories': uploaded_categories, 'proxy': proxy,
+                               'use_proxy_pool': use_proxy_pool,
                                'status': 'queued', 'progress': 2, 'events': [],
-                               'confirm': threading.Event()}
+                               'confirm': threading.Event(), 'cancel_event': threading.Event(),
+                               'worker_done': threading.Event()}
                         JOBS[job['id']] = job
                         jobs.append(job)
                         (RUNS / job['id']).mkdir(parents=True, exist_ok=True)
@@ -427,7 +473,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({**update_status(False), 'updated': True,
                                      'restart_required': True,
                                      'message': '更新完成，请重启工作台以启用后端更新'})
+            if path == '/api/jobs/cleanup':
+                result = cleanup_runs(body.get('keep_recent', 30), body.get('job_id'))
+                return self.respond(result)
             pieces = path.strip('/').split('/')
+            if len(pieces)==4 and pieces[:2]==['api','jobs'] and pieces[3]=='cancel':
+                with LOCK:
+                    job = JOBS.get(pieces[2])
+                    if not job:
+                        return self.respond({'error':'任务不存在'},404)
+                    if job.get('status') in TERMINAL_STATES:
+                        return self.respond({'error':'任务已终止'},409)
+                    job['cancel_event'].set()
+                    job['confirm'].set()
+                    job['status'] = 'cancelled'
+                    job['events'].append({'stage':'cancelled','message':'用户已取消任务','elapsed':0})
+                    save_json(RUNS/job['id']/'progress.json', snapshot(job))
+                return self.respond(snapshot(job),202)
             if len(pieces)==4 and pieces[:2]==['api','jobs'] and pieces[3]=='open-access-confirm':
                 with LOCK:
                     job=JOBS.get(pieces[2])
@@ -439,7 +501,8 @@ class Handler(BaseHTTPRequestHandler):
                 def confirm_access():
                     try:
                         failure=read_json(RUNS/job['id']/'failure.json')
-                        result=Client(proxy=job.get('proxy')).manual_browser_confirm(failure.get('url') or job['site'])
+                        result=Client(proxy=job.get('proxy'), proxy_pool=job.get('use_proxy_pool',False),
+                                      cancel_event=job.get('cancel_event')).manual_browser_confirm(failure.get('url') or job['site'])
                         with LOCK:
                             job['status']='access_confirmed'
                             engine=result.get('engine','visible_browser') if isinstance(result,dict) else 'visible_browser'
@@ -525,6 +588,8 @@ def serve(port, host='0.0.0.0'):
                 except CrawlError:
                     job['status'] = 'needs_recheck'
             job['confirm'] = threading.Event()
+            job['cancel_event'] = threading.Event()
+            job['worker_done'] = threading.Event(); job['worker_done'].set()
             JOBS[job['id']] = job
         except (ValueError, KeyError):
             continue
@@ -545,6 +610,7 @@ if __name__ == '__main__':
     parser.add_argument('--category', help='选择真实导航分类键或 URL，默认第一分类')
     parser.add_argument('--category-file', type=Path, help='手动放入现成的 url.json，跳过自动扣目录')
     parser.add_argument('--proxy', help='可选 HTTP/HTTPS/SOCKS5 代理地址')
+    parser.add_argument('--proxy-pool', action='store_true', help='按顺序使用 working_proxies.txt 代理池')
     parser.add_argument('--all-categories', action='store_true')
     parser.add_argument('--full', action='store_true', help='全自动：审核全部目录、采集全部分类与商品并校验，无确认步骤')
     parser.add_argument('--visual-check', action='store_true', help='截图与视觉审核，实用模式疑点记入警告')
@@ -558,6 +624,7 @@ if __name__ == '__main__':
         run_job(args.site, output, category=args.category, all_categories=args.all_categories,
                 force_ai=args.force_ai, full_products=args.full, visual_check=args.visual_check,
                 uploaded_categories=uploaded, proxy=args.proxy,
+                use_proxy_pool=args.proxy_pool,
                 emit=lambda e: print(json.dumps(e, ensure_ascii=False), flush=True))
     else:
         serve(args.port, args.host)

@@ -829,12 +829,43 @@ class SimpleNavSelfHealTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch(
                 'core.simple_nav.shutil.which', return_value='codex.exe'), patch(
                 'core.simple_nav.subprocess.Popen', side_effect=launch):
-            with self.assertRaisesRegex(CrawlError, '拒绝发布不完整目录'):
-                extract_url_json_with_ai(directory, BASE, data)
+            result = extract_url_json_with_ai(directory, BASE, data)
             coverage = read_json(Path(directory) / 'evidence/navigation_coverage.json')
             self.assertEqual(coverage['final_ai_output_ratio'], 1.0)
             self.assertEqual(coverage['final_ai_root_ratio'], 0.0)
-            self.assertFalse((Path(directory) / 'url.json').exists())
+            self.assertEqual(len(result), len(data['source_navigation_urls']))
+            warnings = read_json(Path(directory) / 'warnings.json')
+            self.assertTrue(any(item['code'] == 'navigation_high_coverage_root_mismatch'
+                                for item in warnings))
+            self.assertTrue((Path(directory) / 'url.json').exists())
+
+    def test_search_popular_categories_cannot_replace_desktop_root_bar(self):
+        html = '''<header>
+        <nav class="main-navigation"><ul>
+          <li><a href="/collections/women">Women</a><ul>
+            <li><a href="/collections/womens-rain-boots">Rain Boots</a></li>
+            <li><a href="/collections/womens-clogs">Mules &amp; Clogs</a></li></ul></li>
+          <li><a href="/collections/men">Men</a><ul>
+            <li><a href="/collections/mens-rain-boots">Rain Boots</a></li></ul></li>
+          <li><a href="/collections/kids">Kids</a><ul>
+            <li><a href="/collections/kids-rain-boots">Rain Boots</a></li></ul></li>
+        </ul></nav>
+        <nav aria-label="Search"><ul>
+          <li><a href="/collections/womens-rain-boots">Women's Rain Boots</a></li>
+          <li><a href="/collections/womens-clogs">Women's Mules &amp; Clogs</a></li>
+          <li><a href="/collections/kids-rain-boots">Kids' Rain Boots</a></li>
+        </ul></nav>
+        <nav aria-label="Main Menu Drawer"><ul>
+          <li><a href="/collections/womens-rain-boots">Women's Rain Boots</a></li>
+          <li><a href="/collections/womens-clogs">Women's Mules &amp; Clogs</a></li>
+          <li><a href="/collections/kids-rain-boots">Kids' Rain Boots</a></li>
+          <li><a href="/collections/women">Women</a></li>
+        </ul></nav></header>'''
+        data = slim_html_for_ai(html, BASE)
+        coverage = data['navigation_coverage']
+        self.assertEqual(coverage['source_roots'], ['Women', 'Men', 'Kids'])
+        self.assertNotIn("Women's Rain Boots", coverage['primary_root_bar'])
+        self.assertNotIn("Women's Rain Boots", coverage['source_roots'])
 
 
 if __name__ == '__main__':

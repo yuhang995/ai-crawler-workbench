@@ -436,6 +436,17 @@ def _page_gallery(soup, url):
                     pass
     if not gallery:
         gallery = list(dict.fromkeys(urljoin(url, a['href']) for a in soup.select('.gallery__grid a.MagicZoom[href]')))
+    if not gallery:
+        # Hyva can server-render the current product gallery as ordinary images
+        # without x-data image JSON or MagicZoom anchors.
+        gallery = list(dict.fromkeys(
+            urljoin(url, node.get('src'))
+            for node in soup.select('img[data-index][src*="/media/catalog/product/"]')
+            if node.get('src') and not node.get('src').startswith('data:')))
+    if not gallery:
+        social = soup.select_one('meta[property="og:image"][content]')
+        if social is not None:
+            gallery = [urljoin(url, social.get('content'))]
     return gallery
 
 
@@ -445,20 +456,36 @@ def _simple_product(soup, product_id, url):
         raise CrawlError('Magento 可选商品缺少真实子商品映射: ' + url)
     sku = soup.select_one('[itemprop="sku"][content]')
     price = soup.select_one('[itemprop="price"][content]')
+    # Hyva/newer Magento themes often replace schema.org itemprop nodes with
+    # the add-to-cart form SKU and Magento's own price-box attributes.  Both
+    # values are server-rendered, product-scoped source evidence.
+    sku_value = (sku.get('content') if sku else '')
+    if not sku_value:
+        sku_node = soup.select_one('#product_addtocart_form[data-product-sku], [data-product-sku]')
+        sku_value = sku_node.get('data-product-sku', '') if sku_node else ''
+    price_value = (price.get('content') if price else '')
+    if not price_value:
+        price_node = soup.select_one(
+            '#product_addtocart_form [data-price-type="finalPrice"][data-price-amount], '
+            '[data-price-type="finalPrice"][data-price-amount]')
+        price_value = price_node.get('data-price-amount', '') if price_node else ''
+    if not price_value:
+        price_meta = soup.select_one('meta[property="product:price:amount"][content]')
+        price_value = price_meta.get('content', '') if price_meta else ''
     availability = soup.select_one('[itemprop="availability"]')
-    if not sku or not price:
+    if not sku_value or not price_value:
         raise CrawlError('Magento 单品缺少 SKU 或价格源证据: ' + url)
     gallery = _page_gallery(soup, url)
     if not gallery:
         raise CrawlError('Magento 单品缺少当前商品图集: ' + url)
-    amount = price['content']
+    amount = price_value
     try:
         valid_amount = float(amount) >= 0
     except (TypeError, ValueError):
         valid_amount = False
     if not valid_amount:
         raise CrawlError('Magento 单品源价格无效')
-    variant = {'id': product_id, 'sku': sku['content'], 'price': str(amount),
+    variant = {'id': product_id, 'sku': sku_value, 'price': str(amount),
                'compare_at_price': None, 'inventory_quantity': '',
                'featured_image': {'src': gallery[0]}, 'source_variant_url': url}
     if availability:

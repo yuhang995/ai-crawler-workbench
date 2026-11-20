@@ -10,6 +10,7 @@ import re
 import socket
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -34,6 +35,26 @@ class AccessChallenge(CrawlError):
     def __init__(self, message, url=None):
         super().__init__(message)
         self.url = url
+
+
+class TaskCancelled(CrawlError):
+    """A workbench operator requested a cooperative task stop."""
+
+
+def load_proxy_pool(path=None):
+    """Load validated proxies in file order without exposing their secrets."""
+    source = Path(path) if path else Path(__file__).resolve().parents[1] / 'working_proxies.txt'
+    if not source.is_file():
+        return []
+    result = []
+    for raw in source.read_text(encoding='utf-8-sig').splitlines():
+        value = raw.strip()
+        if not value or value.startswith('#'):
+            continue
+        proxy = validate_proxy(value)
+        if proxy not in result:
+            result.append(proxy)
+    return result
 
 
 def validate_proxy(value):
@@ -259,15 +280,28 @@ def public_url(url):
 
 
 class Client:
+    CACHE_MAX_ENTRIES = 64
+    CACHE_MAX_BYTES = 64 * 1024 * 1024
+    CACHE_MAX_ITEM_BYTES = 2 * 1024 * 1024
     _domain_locks = {}
     _domain_locks_guard = threading.Lock()
+    _proxy_pool_guard = threading.Lock()
+    _proxy_pool_cursor = {}
 
-    def __init__(self, timeout=20, proxy=None, use_env_proxy=False, state_dir=None):
+    def __init__(self, timeout=20, proxy=None, use_env_proxy=False, state_dir=None,
+                 proxy_pool=False, cancel_event=None):
         self.timeout = timeout
         self.proxy = validate_proxy(proxy) if proxy else (proxy_from_environment() if use_env_proxy else None)
+        self.proxy_pool = (load_proxy_pool() if proxy_pool is True else
+                           [validate_proxy(value) for value in proxy_pool]
+                           if proxy_pool else [])
+        self.proxy_pool = list(dict.fromkeys(self.proxy_pool))
+        self.proxy_pool_index = None
+        self.cancel_event = cancel_event
         self.state_dir = Path(state_dir) if state_dir else Path(__file__).resolve().parents[1] / 'browser_state'
         self.local = threading.local()
-        self.cache = {}
+        self.cache = OrderedDict()
+        self.cache_bytes = 0
         self.lock = threading.Lock()
         self.min_interval = 0.15
         self.rate_lock = threading.Lock()
@@ -279,6 +313,27 @@ class Client:
         self.browser_user_agents = {}
         self.recovery_attempted_domains = set()
         self.fingerprint_indexes = {}
+
+    def _check_cancelled(self):
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise TaskCancelled('任务已由用户取消')
+
+    def _ensure_pool_proxy(self, hostname):
+        if self.proxy or not self.proxy_pool:
+            return
+        with self._proxy_pool_guard:
+            index = self._proxy_pool_cursor.get(hostname, 0)
+            self._proxy_pool_cursor[hostname] = index + 1
+        self.proxy_pool_index = index % len(self.proxy_pool)
+        self.proxy = self.proxy_pool[self.proxy_pool_index]
+
+    def _advance_pool_proxy(self, hostname):
+        if not self.proxy_pool:
+            return False
+        current = self.proxy_pool_index if self.proxy_pool_index is not None else -1
+        self.proxy_pool_index = (current + 1) % len(self.proxy_pool)
+        self.proxy = self.proxy_pool[self.proxy_pool_index]
+        return True
 
     @classmethod
     def domain_lock(cls, hostname):
@@ -299,6 +354,7 @@ class Client:
         return session
 
     def _session(self, hostname):
+        self._ensure_pool_proxy(hostname)
         self._load_browser_state(hostname)
         sessions = getattr(self.local, 'sessions', None)
         if sessions is None:
@@ -382,6 +438,7 @@ class Client:
 
     def pace(self):
         while True:
+            self._check_cancelled()
             with self.rate_lock:
                 now = time.monotonic()
                 next_at = getattr(self.local, 'next_request_at', 0.0) if self.parallel_pacing else self.next_request_at
@@ -395,7 +452,11 @@ class Client:
                         interval = self.min_interval + random.uniform(0, min(0.12, self.min_interval * 0.25))
                         self.next_request_at = now + interval
                     return
-            time.sleep(delay)
+            if self.cancel_event is not None:
+                if self.cancel_event.wait(delay):
+                    self._check_cancelled()
+            else:
+                time.sleep(delay)
 
     def backoff(self, seconds):
         # A 429 from any worker pauses new requests from all site workers.
@@ -477,10 +538,13 @@ class Client:
                         browser.close()
 
     def get(self, url, attempts=3, timeout=None, headers=None):
+        self._check_cancelled()
         cache_key = (url, tuple(sorted((key.lower(), str(value)) for key, value in headers.items()))) if headers else url
         with self.lock:
             if cache_key in self.cache:
-                return self.cache[cache_key]
+                response = self.cache.pop(cache_key)
+                self.cache[cache_key] = response
+                return response
         public_url(url)
         target = url
         recovered = False
@@ -490,6 +554,7 @@ class Client:
             self._apply_browser_state(session, hostname)
             for attempt in range(attempts):
                 try:
+                    self._check_cancelled()
                     self.pace()
                     request_options = {'headers': headers} if headers else {}
                     if headers and urlsplit(target).netloc != urlsplit(url).netloc:
@@ -520,7 +585,10 @@ class Client:
                         if attempt + 1 == attempts:
                             raise CrawlError('HTTP Error 403: JSON 接口持续返回短暂验证页: ' + target)
                         self.backoff(min(8.0, 2.0 * (attempt + 1)))
-                        session = self._reset_session(hostname, rotate=True)
+                        if self._advance_pool_proxy(hostname):
+                            session = self._reset_session(hostname)
+                        else:
+                            session = self._reset_session(hostname, rotate=True)
                         continue
                     if challenged and attempt + 1 < attempts:
                         # A challenge can be fingerprint-specific rather than
@@ -529,7 +597,10 @@ class Client:
                         # attempt may escalate an HTML page to browser/manual
                         # confirmation.
                         self.backoff(min(8.0, 2.0 * (attempt + 1)))
-                        session = self._reset_session(hostname, rotate=True)
+                        if self._advance_pool_proxy(hostname):
+                            session = self._reset_session(hostname)
+                        else:
+                            session = self._reset_session(hostname, rotate=True)
                         continue
                     if r.status_code == 403 and json_endpoint:
                         # Let the ordinary curl retry loop rotate sessions.  If
@@ -563,6 +634,8 @@ class Client:
                                 self.parallel_pacing = False
                                 self.min_interval = min(2.0, max(0.3, self.min_interval * 2))
                             self.backoff(delay)
+                            if attempt >= 1 and self._advance_pool_proxy(hostname):
+                                session = self._reset_session(hostname)
                         else:
                             time.sleep(delay)
                         continue
@@ -572,11 +645,14 @@ class Client:
                     raise
                 except requests.RequestsError as e:
                     if attempt + 1 == attempts:
-                        raise CrawlError(f'请求失败 {target}: {e}') from e
+                        raise CrawlError(f'请求失败 {target}: {redact_sensitive(e, self.proxy)}') from e
                     # Immediate retries tend to hit the same transient reset;
                     # replace the failed connection pool and rotate the browser
                     # fingerprint before the bounded replay.
-                    session = self._reset_session(hostname, rotate=True)
+                    if self._advance_pool_proxy(hostname):
+                        session = self._reset_session(hostname)
+                    else:
+                        session = self._reset_session(hostname, rotate=True)
                     time.sleep(0.5 * (attempt + 1))
             if r.status_code in (301, 302, 303, 307, 308):
                 from urllib.parse import urljoin
@@ -589,13 +665,43 @@ class Client:
             raise CrawlError('单个响应超过 25 MB')
         if is_access_challenge_response(r):
             raise AccessChallenge('站点返回人机验证挑战，响应未缓存: ' + target, target)
-        with self.lock:
-            self.cache[cache_key] = r
+        item_bytes = len(r.content)
+        if item_bytes <= self.CACHE_MAX_ITEM_BYTES:
+            with self.lock:
+                previous = self.cache.pop(cache_key, None)
+                if previous is not None:
+                    self.cache_bytes -= len(previous.content)
+                self.cache[cache_key] = r
+                self.cache_bytes += item_bytes
+                while (len(self.cache) > self.CACHE_MAX_ENTRIES
+                       or self.cache_bytes > self.CACHE_MAX_BYTES):
+                    _, evicted = self.cache.popitem(last=False)
+                    self.cache_bytes -= len(evicted.content)
         return r
 
-    def json(self, url, headers=None):
+    def clear_cache(self):
+        """Release response bodies deterministically after a long-running job."""
+        with self.lock:
+            self.cache.clear()
+            self.cache_bytes = 0
+
+    def json(self, url, headers=None, timeout=None, attempts=3):
+        """Return a public JSON response with the same bounded transport options.
+
+        ``timeout`` and ``attempts`` are optional so existing adapters keep their
+        historical call contract.  Long collection sweeps use them to enforce a
+        per-category wall-clock budget instead of allowing one feed page to hold
+        the entire job indefinitely.
+        """
         try:
-            response = self.get(url, headers=headers) if headers else self.get(url)
+            options = {}
+            if timeout is not None:
+                options['timeout'] = timeout
+            if attempts != 3:
+                options['attempts'] = attempts
+            if headers:
+                options['headers'] = headers
+            response = self.get(url, **options)
             requested, actual = urlsplit(url), urlsplit(response.url)
             if requested.hostname != actual.hostname or unquote(requested.path).rstrip('/') != unquote(actual.path).rstrip('/'):
                 raise CrawlError('JSON 接口重定向改变了来源范围: ' + url)

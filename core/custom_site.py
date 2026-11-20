@@ -28,8 +28,9 @@ STOREFRONT_MODULES = {
     'pinia_storefront': 'pinia_storefront',
     'mobify_storefront': 'mobify_storefront',
     'jsonld_storefront': 'jsonld_storefront',
+    'woocommerce_storefront': 'woocommerce_storefront',
 }
-SUPPORTED_PLATFORMS = {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}
+SUPPORTED_PLATFORMS = {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld', 'woocommerce'}
 
 
 def source_adapter(kind):
@@ -55,6 +56,9 @@ def identify_platform(html: str) -> str:
         return 'bigcommerce'
     if "pinia" in lower and ("__nuxt__" in lower or "_payload.json" in lower or 'window.__initial_state__' in lower):
         return "pinia"
+    from .woocommerce_storefront import supports as supports_woocommerce
+    if supports_woocommerce(html):
+        return 'woocommerce'
     from .jsonld_storefront import supports_home
     if supports_home(html):
         return 'jsonld'
@@ -143,7 +147,7 @@ def _native_navigation(root, base, html, platform, client):
     elif platform == 'demandware':
         categories = demandware_navigation(html, base, client=client)
         scope = 'source_menu_level_attributes'
-    elif platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:
+    elif platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld', 'woocommerce'}:
         adapter = source_adapter(platform + '_storefront')
         categories = adapter.navigation(html, base, client=client, evidence_dir=root / 'evidence')
         scope = 'source_navigation_and_homepage'
@@ -490,7 +494,7 @@ def _collectors(platform):
         return collect_listing, braun_product
     if platform == 'demandware':
         return demandware_listing, demandware_product
-    if platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:
+    if platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld', 'woocommerce'}:
         adapter = source_adapter(platform + '_storefront')
         return adapter.collect_listing, adapter.fetch_product
     raise CrawlError('没有已配置的自建站商品适配器: ' + str(platform))
@@ -556,21 +560,62 @@ def _preserve_product_source(root, sample):
         reference['file'] = copied[relative]
 
 
-def _distinct_samples(client, root, product, urls, cache, limit, skipped=None):
+def _transient_product_error(error):
+    message = str(error).casefold()
+    return ('请求失败' in str(error) and any(marker in message for marker in (
+        'ssl_connect', 'connection closed', 'connection reset',
+        'could not resolve host', 'name resolution', 'dns',
+        'curl: (6)', 'curl: (28)', 'curl: (35)', 'curl: (56)',
+        'timed out', 'timeout')))
+
+
+def _distinct_samples(client, root, product, urls, cache, limit, skipped=None,
+                      failed=None, preserve_sources=True):
     samples, parents = [], set()
     for url in dict.fromkeys(urls):
         if url not in cache:
-            try:
-                sample = product(client, url, root / 'evidence')
-            except AdapterRequired as error:
-                if skipped is None:
-                    raise
-                skipped.append({'url': url, 'reason': str(error)})
+            checkpoint_dir = root / 'evidence' / 'custom-product-checkpoints'
+            checkpoint = checkpoint_dir / (hashlib.sha256(url.encode('utf-8')).hexdigest() + '.json')
+            if checkpoint.is_file():
+                saved = read_json(checkpoint)
+                if (saved.get('url') == url and saved.get('product', {}).get('id')):
+                    cache[url] = saved
+                    sample = saved
+                else:
+                    checkpoint.unlink()
+                    sample = None
+            else:
+                sample = None
+            for transport_attempt in range(5):
+                if sample is not None:
+                    break
+                try:
+                    sample = product(client, url, root / 'evidence')
+                    break
+                except AdapterRequired as error:
+                    if skipped is None:
+                        raise
+                    skipped.append({'url': url, 'reason': str(error)})
+                    break
+                except CrawlError as error:
+                    transient = _transient_product_error(error)
+                    if not transient or transport_attempt == 4:
+                        if transient and failed is not None:
+                            failed.append({'url': url, 'error': str(error),
+                                           'exception_type': type(error).__name__})
+                            sample = None
+                            break
+                        raise
+                    time.sleep(min(8, 1 + 2 * transport_attempt))
+            if sample is None:
                 continue
             if sample.get('url') != url or not sample.get('product', {}).get('id'):
                 raise CrawlError('商品卡片响应缺少对应的真实父商品身份')
-            _preserve_product_source(root, sample)
+            if preserve_sources:
+                _preserve_product_source(root, sample)
             cache[url] = sample
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            save_json(checkpoint, sample)
         sample = cache[url]
         parent = str(sample['product']['id'])
         if parent in parents:
@@ -597,7 +642,7 @@ def _attach_identity_sources(detail, listings, cache):
 
 
 def _native_identity(platform, url):
-    if platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:
+    if platform in {'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld', 'woocommerce'}:
         return True
     if platform == 'demandware':
         from .sfcc_storefront import supports
@@ -612,6 +657,8 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
     selected, listings, detail, by_url, cache = {}, {}, {}, {}, {}
     samples = []
     native = False
+    parent_urls = {url for key, url in candidates
+                   if any(other.startswith(key + ',') for other, _ in candidates)}
     for key, url in candidates:
         try:
             if url not in by_url:
@@ -627,6 +674,14 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
                     files.append({'file': 'evidence/' + name, 'url': source['url'],
                                   'products_path': '/products', 'paging_path': '/paging'})
                 candidate['source_mapping']['files'] = files
+            if candidate.get('source_format') == 'woocommerce_store_api':
+                files = []
+                for source_index, source in enumerate(candidate.get('source_responses', [])):
+                    fingerprint = hashlib.sha256(source['url'].encode('utf-8')).hexdigest()[:16]
+                    name = f'woocommerce-listing-{fingerprint}-{source_index:03d}.json'
+                    save_json(root / 'evidence' / name, source['response'])
+                    files.append('evidence/' + name)
+                candidate['pages'] = files
             native = _native_identity(platform, url)
             card_count = len(candidate['urls'])
             candidate_samples = []
@@ -645,6 +700,21 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
                     samples = candidate_samples
                     break
         except CrawlError as error:
+            content_landing = (all_categories and url in parent_urls
+                               and '分类页没有可验证的商品网格' in str(error))
+            if content_landing:
+                attempts.append({"category": key, "url": url, "distinct_products": 0,
+                                 "card_urls": 0, "status": "content_landing_skipped",
+                                 "error": str(error)})
+                warnings_path = root / 'warnings.json'
+                warnings = read_json(warnings_path) if warnings_path.is_file() else []
+                warning = {'code': 'content_landing_skipped',
+                           'message': '父级导购页没有商品网格；已保留下级真实分类继续全量采集',
+                           'url': url, 'reason': str(error)}
+                if warning not in warnings:
+                    warnings.append(warning)
+                    save_json(warnings_path, warnings)
+                continue
             attempts.append({"category": key, "url": url, "distinct_products": 0,
                              "status": "unverifiable_listing", "error": str(error)})
             save_json(root / 'sample_attempts.json', attempts)
@@ -655,11 +725,20 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
             if all_categories:
                 raise
     urls = list(dict.fromkeys(u for links in detail.values() for u in links))
+    # Full runs may spend minutes paginating many category pages. Persist that
+    # deterministic work before detail collection so a later transport error
+    # has a resumable/auditable checkpoint instead of an empty run directory.
+    if all_categories:
+        save_json(root / "detail_url.json", detail)
+        save_json(root / "listings.json", listings)
+        save_json(root / 'sample_attempts.json', attempts)
     if native and all_categories:
         skipped_products = []
+        failed_products = []
         samples = _distinct_samples(client, root, product, urls, cache,
                                     None if full_products else 3,
-                                    skipped_products if full_products else None)
+                                    skipped_products if full_products else None,
+                                    failed_products if full_products else None)
         if skipped_products:
             skipped_urls = {item['url'] for item in skipped_products}
             for key in list(detail):
@@ -672,9 +751,36 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
                 listing['excluded_urls'] = sorted(
                     set(listing.get('excluded_urls', [])) & skipped_urls
                     | (original_listing_urls & skipped_urls))
+        if failed_products:
+            save_json(root / 'failed_products.json', failed_products)
+            failure_ratio = len(failed_products) / max(1, len(urls))
+            warnings_path = root / 'warnings.json'
+            warnings = read_json(warnings_path) if warnings_path.is_file() else []
+            warnings.append({'code': 'transient_products_skipped',
+                             'message': '个别商品临时网络失败；已保留成功商品并继续全量任务',
+                             'failed': len(failed_products),
+                             'planned': len(urls), 'ratio': round(failure_ratio, 4)})
+            save_json(warnings_path, warnings)
+            if len(samples) < 3 or failure_ratio > .20:
+                raise CrawlError('全量商品临时网络失败比例超过 20%')
     elif not native:
-        samples = [product(client, value, root / 'evidence')
-                   for value in (urls if full_products else urls[:3])]
+        failed_products = []
+        samples = _distinct_samples(client, root, product, urls, cache,
+                                    None if full_products else 3,
+                                    failed=failed_products if full_products else None,
+                                    preserve_sources=False)
+        if failed_products:
+            save_json(root / 'failed_products.json', failed_products)
+            failure_ratio = len(failed_products) / max(1, len(urls))
+            warnings_path = root / 'warnings.json'
+            warnings = read_json(warnings_path) if warnings_path.is_file() else []
+            warnings.append({'code': 'transient_products_skipped',
+                             'message': '个别商品临时网络失败；已保留成功商品并继续全量任务',
+                             'failed': len(failed_products), 'planned': len(urls),
+                             'ratio': round(failure_ratio, 4)})
+            save_json(warnings_path, warnings)
+            if len(samples) < 3 or failure_ratio > .20:
+                raise CrawlError('全量商品临时网络失败比例超过 20%')
     if not samples or (not full_products and len(samples) < 3):
         reason = next((a['error'] for a in reversed(attempts) if a.get('error')), '')
         raise CrawlError(f'{platform} 候选分类没有可验证的商品样本。{reason}')
@@ -723,6 +829,14 @@ def run_links(root):
                 files.append({'file': 'evidence/' + name, 'url': source['url'],
                               'products_path': '/products', 'paging_path': '/paging'})
             listing['source_mapping']['files'] = files
+        if listing.get('source_format') == 'woocommerce_store_api':
+            files = []
+            for source_index, source in enumerate(listing.get('source_responses', [])):
+                fingerprint = hashlib.sha256(source['url'].encode('utf-8')).hexdigest()[:16]
+                name = f'woocommerce-listing-{fingerprint}-{source_index:03d}.json'
+                save_json(root / 'evidence' / name, source['response'])
+                files.append('evidence/' + name)
+            listing['pages'] = files
         listings[key], detail[key] = listing, listing["urls"]
         print(key, len(listing["urls"]), flush=True)
     save_json(root / "listings.json", listings)
@@ -755,13 +869,31 @@ def run_products(root, all_products=False):
         from .sfcc_storefront import seed_react_cards
         seed_react_cards(client, listings)
     cache = {}
+    failed_products = []
+    if all_products and (root / 'failed_products.json').is_file():
+        (root / 'failed_products.json').unlink()
     native = _native_identity(platform, base_url)
     if native:
-        samples = _distinct_samples(client, root, product, urls, cache, None if all_products else 3)
+        samples = _distinct_samples(client, root, product, urls, cache,
+                                    None if all_products else 3,
+                                    failed=failed_products if all_products else None,
+                                    preserve_sources=native)
     else:
-        samples = [product(client, url, root / 'evidence') for url in (urls if all_products else urls[:3])]
+        samples = _distinct_samples(client, root, product, urls, cache,
+                                    None if all_products else 3,
+                                    failed=failed_products if all_products else None)
     if not samples or (not all_products and len(samples) != 3):
         raise CrawlError('商品范围不足 3 个不同父商品')
+    if failed_products:
+        save_json(root / 'failed_products.json', failed_products)
+        ratio = len(failed_products) / max(1, len(urls))
+        warnings_path = root / 'warnings.json'
+        warnings = read_json(warnings_path) if warnings_path.is_file() else []
+        warnings.append({'code': 'transient_products_skipped', 'failed': len(failed_products),
+                         'planned': len(urls), 'ratio': round(ratio, 4)})
+        save_json(warnings_path, warnings)
+        if len(samples) < 3 or ratio > .20:
+            raise CrawlError('全量商品临时网络失败比例超过 20%')
     if native:
         _attach_identity_sources(detail, listings, cache)
         save_json(root / 'listings.json', listings)

@@ -1,4 +1,5 @@
 import copy
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -162,6 +163,9 @@ class PipelineAIRepairTests(unittest.TestCase):
                     return _check_candidate(work, scope)
 
                 repair = stack.enter_context(patch('core.ai_repair.repair_sample', side_effect=repair_all))
+                stack.enter_context(patch(
+                    'core.pipeline.subprocess.run',
+                    return_value=subprocess.CompletedProcess([], 0, '', '')))
                 report = run_job(BASE, root, full_products=True, force_ai=force_ai)
                 native.assert_not_called()
                 repair.assert_called_once()

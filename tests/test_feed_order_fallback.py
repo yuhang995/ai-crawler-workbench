@@ -4,11 +4,13 @@ from unittest.mock import MagicMock,patch
 
 from playwright.sync_api import TimeoutError as BrowserTimeout
 
-from core.common import CrawlError
+from core.common import AdapterRequired, CrawlError
 from core.shopify_fastpath import (collect_listing,embedded_product_handles,
-                                   goto_listing,RenderedPages,route_listing_assets)
+                                   goto_listing,RenderedPages,route_listing_assets,
+                                   detail_shopify_origin)
 from core.validator import source_order
 from core.pipeline import compact_shopify_listing_evidence
+from core.pipeline import collect_full_shopify_listings
 
 
 BASE='https://example.com/collections/shop'
@@ -26,6 +28,19 @@ class Client:
     def __init__(self,html,products):self.html=html;self.products=products
     def get(self,url):return Response(self.html,url)
     def json(self,url):return {'products':self.products}
+
+
+class DetailOriginTests(unittest.TestCase):
+    def test_standard_theme_ignores_stale_declared_myshopify_origin(self):
+        detection = {'mode': 'standard_shopify', 'headless_shopify': False,
+                     'shopify_origin': 'https://old-store.myshopify.com'}
+        self.assertEqual(detail_shopify_origin(detection), '')
+
+    def test_hydrogen_keeps_verified_separate_data_origin(self):
+        detection = {'mode': 'hydrogen_shopify', 'headless_shopify': True,
+                     'shopify_origin': 'https://brand.myshopify.com'}
+        self.assertEqual(detail_shopify_origin(detection),
+                         'https://brand.myshopify.com')
 
 
 class FeedOrderFallbackTests(unittest.TestCase):
@@ -131,6 +146,23 @@ class FeedOrderFallbackTests(unittest.TestCase):
         self.assertEqual(result['order_evidence'],'products_feed_fallback')
         self.assertEqual(result['warnings'][0]['reason'],'full_store_feed_order')
 
+    def test_full_store_feed_uses_250_item_pages(self):
+        products=[product(f'p{i}',i) for i in range(1,253)]
+        html='<main></main>'
+
+        class PagedClient:
+            def __init__(self): self.urls=[]
+            def get(self,url,**kwargs): return Response(html,url)
+            def json(self,url,**kwargs):
+                self.urls.append(url)
+                return {'products': products[250:] if 'page=2' in url else products[:250]}
+
+        client=PagedClient()
+        result=collect_listing(client,BASE,prefer_feed_order=True,max_seconds=180)
+        self.assertEqual(result['feed_page_size'],250)
+        self.assertIn('limit=250',client.urls[0])
+        self.assertEqual(len(result['products']),252)
+
     def test_full_store_mode_survives_collection_html_transport_failure(self):
         products=[product('a',1),product('b',2),product('c',3)]
         client=MagicMock()
@@ -140,6 +172,33 @@ class FeedOrderFallbackTests(unittest.TestCase):
         self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
         self.assertEqual(result['order_evidence'],'products_feed_fallback')
         self.assertEqual(result['warnings'][0]['code'],'listing_html_feed_only_fallback')
+
+    def test_full_store_skips_only_proven_parent_content_landing(self):
+        categories = {
+            'Shop': BASE,
+            'Shop,Shop Boots': BASE + '-boots',
+            'Sale': BASE + '-sale',
+        }
+        child = {'url': BASE + '-boots', 'urls': [BASE + '/products/a'],
+                 'products': [product('a', 1)], 'warnings': []}
+        sale = {'url': BASE + '-sale', 'urls': [BASE + '/products/b'],
+                'products': [product('b', 2)], 'warnings': []}
+        def collect(client, url, prefer_feed_order=False):
+            if url == BASE:
+                raise AdapterRequired('落地页既无完整子集合来源，也无完整、有限的显式商品卡片')
+            return child if url.endswith('-boots') else sale
+        with patch('core.pipeline.collect_listing', side_effect=collect):
+            urls, values, warnings = collect_full_shopify_listings(object(), categories)
+        self.assertEqual(urls, [BASE + '-boots', BASE + '-sale'])
+        self.assertEqual(values, [child, sale])
+        self.assertEqual(warnings[0]['code'], 'content_landing_skipped')
+
+    def test_full_store_never_skips_a_leaf_adapter_failure(self):
+        categories = {'Shop,Shop Boots': BASE + '-boots'}
+        with patch('core.pipeline.collect_listing', side_effect=AdapterRequired(
+                '落地页既无完整子集合来源，也无完整、有限的显式商品卡片')):
+            with self.assertRaises(AdapterRequired):
+                collect_full_shopify_listings(object(), categories)
 
     def test_tag_scoped_collection_never_broadens_after_html_failure(self):
         client=MagicMock()
@@ -174,6 +233,17 @@ class FeedOrderFallbackTests(unittest.TestCase):
         with patch('core.shopify_fastpath.rendered_listing_pages',side_effect=BrowserTimeout('grid timeout')):
             with self.assertRaises(BrowserTimeout):
                 collect_listing(Client('<main></main>',products),BASE+'?filter.color=blue')
+
+    def test_full_filtered_browser_timeout_downgrades_to_verified_feed(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        with patch('core.shopify_fastpath.rendered_listing_pages',
+                   side_effect=BrowserTimeout('Locator.wait_for timeout')):
+            result=collect_listing(Client('<main></main>',products),
+                                   BASE+'?filter.color=blue', prefer_feed_order=True)
+        self.assertEqual([p['handle'] for p in result['products']], ['a','b','c'])
+        self.assertEqual(result['order_evidence'], 'products_feed_fallback')
+        self.assertEqual(result['warnings'][0]['code'], 'listing_order_feed_fallback')
+        self.assertIn('Playwright', result['warnings'][0]['message'])
 
     def test_goto_uses_commit_and_12_second_element_wait(self):
         page=MagicMock();page.url=BASE;warnings=[]

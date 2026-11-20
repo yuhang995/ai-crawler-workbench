@@ -5,7 +5,7 @@
   <title>AI Crawler · Local Console</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/light.css">
 </head>
 <body><div class="ambient ambient-one"></div><div class="ambient ambient-two"></div><main>
-  <header class="masthead"><div class="brand-mark" aria-hidden="true"><span></span></div><div class="brand-copy"><span class="eyebrow">AI CRAWLER · VERSION <b id="app-version">1.0.4</b></span><h1>采集工作台</h1><p>多站并发采集、校验真实商品、交付独立数据包。</p></div><div class="header-actions"><button type="button" class="update-button" id="check-update">检查更新</button><div class="live-indicator"><i></i><span>4 线程运行</span></div></div></header>
+  <header class="masthead"><div class="brand-mark" aria-hidden="true"><span></span></div><div class="brand-copy"><span class="eyebrow">AI CRAWLER · VERSION <b id="app-version">1.0.5</b></span><h1>采集工作台</h1><p>多站并发采集、校验真实商品、交付独立数据包。</p></div><div class="header-actions"><button type="button" class="update-button" id="cleanup-jobs">清理旧任务</button><button type="button" class="update-button" id="check-update">检查更新</button><div class="live-indicator"><i></i><span>4 线程运行</span></div></div></header>
   <section class="panel launch-panel" aria-labelledby="launch-title">
     <div class="panel-heading"><div><span class="section-kicker">NEW RUN</span><h2 id="launch-title">新建采集任务</h2></div><span class="keyboard-hint">Ctrl / ⌘ + Enter</span></div>
     <form id="new-job">
@@ -17,6 +17,7 @@
         <label class="switch-option"><input name="use_category_file" type="checkbox"><span class="switch"><i></i></span><span><b>分类文件</b><small>使用现成 url.json</small></span></label>
         <label class="switch-option"><input name="all_categories" type="checkbox"><span class="switch"><i></i></span><span><b>全部目录</b><small>收集所有列表</small></span></label>
         <label class="switch-option"><input name="force_ai" type="checkbox"><span class="switch"><i></i></span><span><b>非标处理</b><small>启用 AI 适配</small></span></label>
+        <label class="switch-option"><input name="use_proxy_pool" type="checkbox"><span class="switch"><i></i></span><span><b>代理池</b><small>working_proxies.txt</small></span></label>
       </div>
       <label id="category-file-row" class="upload-zone" hidden><span>选择现成的 url.json</span><input name="category_file" type="file" accept=".json,application/json"><small>上传后跳过自动目录提取，校验通过即进入商品采集。</small></label>
       <div class="form-footer"><p class="hint">默认采集 1 个分类与前 3 个父商品，并生成可独立验证的交付包。</p><button class="button button-primary" type="submit"><span>开始采集</span><i>→</i></button></div><p id="error" role="alert"></p>

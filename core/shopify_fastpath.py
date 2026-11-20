@@ -1,23 +1,37 @@
 """Deterministic Shopify reader. Adapted from the user's two Shopify templates."""
 import csv
+import sys
+import gc
 import json
 import re
 import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from .html_parser import normalize_event_attributes
-from urllib.parse import urlsplit, urljoin, unquote, parse_qs
+from urllib.parse import urlsplit, urljoin, unquote, parse_qs, quote
 from .html_parser import parse_soup as BeautifulSoup
 from .common import CrawlError, AdapterRequired, query, save_json, read_json
 
+# Shopify descriptions and embedded component payloads can legitimately exceed
+# Python's conservative 128 KiB CSV default. Keep parsing bounded but practical.
+try:
+    csv.field_size_limit(min(sys.maxsize, 64 * 1024 * 1024))
+except OverflowError:  # pragma: no cover
+    csv.field_size_limit(2 ** 31 - 1)
+
 FEED_PAGE_SIZE = 50
+FULL_SWEEP_FEED_PAGE_SIZE = 250
 
 
-def _large_document_get(client, url):
+class ListingCollectionTimeout(CrawlError):
+    """One collection exceeded its bounded full-store listing budget."""
+
+
+def _large_document_get(client, url, timeout=60):
     """Use the large-page budget while retaining simple test/client adapters."""
     try:
         # Exhaust the three configured fingerprints: Firefox -> Chrome -> Safari.
-        return client.get(url, attempts=3, timeout=60)
+        return client.get(url, attempts=3, timeout=timeout)
     except TypeError as error:
         if 'unexpected keyword argument' not in str(error):
             raise
@@ -1144,7 +1158,7 @@ def listing_dom(html, url):
     for el in list(root_doc.iter()):
         if not isinstance(el.tag, str) or el is root_doc:
             continue
-        if (el.tag in ('script','style','template','noscript','header','footer','nav')
+        if (el.tag in ('script','style','template','noscript','header','footer','nav','aside')
             or el.get('hidden') is not None or el.get('aria-hidden') == 'true'
             or re.search(r'display\s*:\s*none', el.get('style',''), re.I)
             or excluded.search(marker(el))):
@@ -1164,15 +1178,29 @@ def listing_dom(html, url):
         for el in root_doc.iter():
             if not isinstance(el.tag,str):continue
             classes=set(el.get('class','').split())
-            if (el.get('data-product-grid') is not None or any(re.search(r'(?:^|[_-])(?:collection-cards-grid|productsgridwrapper)(?:$|[_-])',c,re.I) for c in classes) or classes & {'product-grid','product-list-grid','collection-products','collection__products','product-list','collection-grid'}) and el.xpath('.//a[contains(@href,"/products/")]'):
+            if (el.get('data-product-grid') is not None or any(re.search(r'(?:^|[_-])(?:collection-cards-grid|productsgridwrapper)(?:$|[_-])',c,re.I) for c in classes) or classes & {'product-grid','product-list-grid','collection-products','collection__products','product-list','collection-grid'}) and el.xpath('.//a[contains(@href,"/products/") or contains(@href,"/product/")]'):
                 root=el;break
     if root is None:
-        nodes=root_doc.xpath('descendant-or-self::main | descendant-or-self::*[@role="main" or @id="MainContent"]')
+        nodes=root_doc.xpath(
+            'descendant-or-self::main | '
+            'descendant-or-self::*[@role="main" or @id="MainContent" or @id="main" or @id="content" '
+            'or contains(concat(" ", normalize-space(@class), " "), " main-content ")]')
         root=nodes[0] if nodes else None
     if root is None:
-        raise AdapterRequired('未找到前端商品主体，需非标适配')
+        # Some otherwise standard themes render the PLP directly below body
+        # without a semantic main wrapper.  Header/nav/footer/aside and known
+        # recommendation blocks were already removed above, so the remaining
+        # body is a bounded fallback rather than an arbitrary whole-page scan.
+        bodies = root_doc.xpath('descendant-or-self::body')
+        candidate = bodies[0] if bodies else root_doc
+        if candidate.xpath('.//a[contains(@href,"/products/") or contains(@href,"/product/")]'):
+            root = candidate
+        else:
+            # Return an empty visible grid.  collect_listing can then use the
+            # complete unfiltered Shopify feed with an explicit warning.
+            root = candidate
     ordered, seen=[],set()
-    for href in root.xpath('.//a[contains(@href,"/products/")]/@href'):
+    for href in root.xpath('.//a[contains(@href,"/products/") or contains(@href,"/product/")]/@href'):
         target=urljoin(url,href)
         if urlsplit(target).hostname != urlsplit(url).hostname:continue
         slug=handle(target)
@@ -1472,8 +1500,30 @@ def resolve_landing_membership(client, html, url):
         return products, [], cards
 
 
-def collect_listing(client, url, out=None, full=True, prefer_feed_order=False):
+def collect_listing(client, url, out=None, full=True, prefer_feed_order=False,
+                    max_seconds=None):
     start = time.perf_counter()
+    deadline = start + max_seconds if max_seconds else None
+
+    def check_deadline():
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise ListingCollectionTimeout(
+                f'单分类列表采集超过 {max_seconds:g} 秒: {url}')
+
+    def listing_json(target):
+        check_deadline()
+        if deadline is None:
+            return client.json(target)
+        remaining = max(1.0, deadline - time.perf_counter())
+        try:
+            result = client.json(target, timeout=min(20.0, remaining), attempts=3)
+        except TypeError as error:
+            # Preserve lightweight fixture/custom client compatibility.
+            if 'unexpected keyword argument' not in str(error):
+                raise
+            result = client.json(target)
+        check_deadline()
+        return result
     parts = urlsplit(url)
     if '/products/' in parts.path and '/collections/' not in parts.path:
         return {'format': 'direct_product', 'url': url, 'urls': [url], 'products': [], 'pages': [], 'feeds': [], 'complete': True}
@@ -1490,7 +1540,9 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False):
     feed_only_allowed = bool(prefer_feed_order and not tag_scoped and not query_scoped)
     early_warnings = []
     try:
-        response = _large_document_get(client, parts._replace(fragment='').geturl())
+        response = _large_document_get(
+            client, parts._replace(fragment='').geturl(),
+            timeout=min(30, max_seconds) if max_seconds else 60)
     except CrawlError as error:
         if not feed_only_allowed:
             raise
@@ -1527,7 +1579,10 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False):
         endpoint_parts = endpoint_parts._replace(scheme=origin.scheme, netloc=origin.netloc)
     endpoint = endpoint_parts.geturl()
     try:
-        feed = client.json(query(endpoint, page=1, limit=FEED_PAGE_SIZE))
+        feed_page_size = (FULL_SWEEP_FEED_PAGE_SIZE
+                          if prefer_feed_order and not tag_scoped and not query_scoped
+                          else FEED_PAGE_SIZE)
+        feed = listing_json(query(endpoint, page=1, limit=feed_page_size))
     except CrawlError:
         hydrogen = hydrogen_collection_listing(client, url, response.text, full=full)
         if hydrogen is None:
@@ -1576,6 +1631,14 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False):
         from playwright.sync_api import TimeoutError as BrowserTimeout, Error as BrowserError
         try:
             rendered = rendered_listing_pages(url, full)
+        except BrowserTimeout as error:
+            if len(products) < 3 or (scoped and not prefer_feed_order):
+                raise
+            rendered=RenderedPages()
+            rendered.warnings.append({'code':'listing_order_feed_fallback',
+                'message':'Playwright 商品网格超时；全量模式使用已验证 Shopify Feed 继续',
+                'url':url,'reason':str(error)})
+            feed_fallback=True
         except (BrowserError,AdapterRequired) as error:
             if scoped or len(products)<3:
                 raise
@@ -1633,9 +1696,10 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False):
     # Feed pages build the membership map; HTML controls order and inclusion.
     seen_feed = {str(p['id']) for p in products}
     page = 1
-    while not membership_sources and len(feeds[-1]['products']) == FEED_PAGE_SIZE:
+    while not membership_sources and len(feeds[-1]['products']) == feed_page_size:
+        check_deadline()
         page += 1
-        data = client.json(query(endpoint, page=page, limit=FEED_PAGE_SIZE))
+        data = listing_json(query(endpoint, page=page, limit=feed_page_size))
         batch = data.get('products')
         if not isinstance(batch, list):
             raise CrawlError('分类 feed 分页无效')
@@ -1665,7 +1729,7 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False):
         if current in visited:
             raise CrawlError('前端分页循环')
         visited.add(current)
-        if current==url and static_handles and not scoped:
+        if current==url and static_handles and (not scoped or feed_fallback):
             slugs=static_handles
             selected=[by_handle[slug] for slug in slugs if slug in by_handle]
             nxt=None;dynamic=False
@@ -1695,7 +1759,7 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False):
     result = {'url': url, 'products': ordered, 'urls': [product_url(url, p['handle']) for p in ordered],
               'warnings':getattr(rendered,'warnings',[]),
               'order_evidence':order_evidence,
-              'feed_page_size': FEED_PAGE_SIZE,
+              'feed_page_size': feed_page_size,
               'membership_sources': membership_sources,
               'card_sources': card_sources,
               'pages': pages, 'feeds': feeds, 'complete': full,
@@ -1734,8 +1798,62 @@ def clean_description(value):
     return str(soup)
 
 
-def image_url(value):
-    return 'https:' + value if value.startswith('//') else value
+def image_url(value, base=''):
+    """Return a safe absolute public image URL, or an empty string.
+
+    Shopify/theme payloads may use protocol-relative paths, root-relative
+    paths, or leave spaces unescaped.  A malformed optional gallery member is
+    not product identity evidence and must not invalidate an entire full run.
+    """
+    if not isinstance(value, str):
+        return ''
+    value = value.strip()
+    if not value or value.casefold().startswith(('data:', 'javascript:', 'blob:')):
+        return ''
+    target = urljoin(base, 'https:' + value if value.startswith('//') else value)
+    parsed = urlsplit(target)
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc or parsed.username:
+        return ''
+    path = quote(unquote(parsed.path), safe='/%:@!$&\'()*+,;=-._~')
+    query_value = quote(unquote(parsed.query), safe='=&%/:;+,-._~')
+    return parsed._replace(path=path, query=query_value, fragment='').geturl()
+
+
+def normalize_product_images(product, base):
+    """Normalize gallery/variant images and report only discarded bad values."""
+    discarded = []
+    normalized = []
+    for item in product.get('images', []):
+        raw = item.get('src', '') if isinstance(item, dict) else item
+        target = image_url(raw, base)
+        if not target:
+            if raw:
+                discarded.append(str(raw))
+            continue
+        if isinstance(item, dict):
+            item = dict(item); item['src'] = target
+        else:
+            item = target
+        normalized.append(item)
+    product['images'] = normalized
+    for variant in product.get('variants', []):
+        featured = variant.get('featured_image')
+        if isinstance(featured, dict) and featured.get('src'):
+            target = image_url(featured['src'], base)
+            if target:
+                featured = dict(featured); featured['src'] = target
+                variant['featured_image'] = featured
+            else:
+                discarded.append(str(featured['src']))
+                variant['featured_image'] = None
+    return discarded
+
+
+def source_product_without_images(sample):
+    """True only for an honestly empty official gallery, never a sanitized bad URL."""
+    return (not product_gallery(sample.get('product', {}))
+            and not any(warning.get('code') == 'invalid_product_images_skipped'
+                        for warning in sample.get('warnings', [])))
 
 
 def variant_images(product, variant):
@@ -1782,7 +1900,11 @@ def fetch_product(client, url, fallback=None):
                 raise CrawlError('商品身份或变体数据无效')
             if len(product['variants']) >= 250:
                 raise CrawlError('达到接口 250 变体上限，需非标完整性核验')
-            return {'url': url, 'source': source, 'endpoint': endpoint, 'product': product}
+            discarded = normalize_product_images(product, url)
+            return {'url': url, 'source': source, 'endpoint': endpoint, 'product': product,
+                    'warnings': ([{'code': 'invalid_product_images_skipped',
+                                  'url': url, 'count': len(discarded)}]
+                                 if discarded else [])}
         except (CrawlError, AttributeError) as e:
             errors.append(str(e))
     try:
@@ -1792,14 +1914,40 @@ def fetch_product(client, url, fallback=None):
             raise CrawlError('商品页缺少受支持的 Hydrogen 商品数据')
         if partial and fallback.get('id') and str(product['id']) != str(fallback['id']):
             raise CrawlError('Hydrogen 商品页身份与分类卡片不一致')
+        discarded = normalize_product_images(product, url)
         return {'url': url, 'source': 'collection', 'endpoint': url,
                 'product': product, 'source_html': html,
-                'source_format': 'hydrogen_devalue'}
+                'source_format': 'hydrogen_devalue',
+                'warnings': ([{'code': 'invalid_product_images_skipped',
+                              'url': url, 'count': len(discarded)}]
+                             if discarded else [])}
     except CrawlError as error:
         errors.append(str(error))
     if fallback and not partial and fallback.get('handle') == handle(url) and 0 < len(fallback.get('variants', [])) < 250:
-        return {'url': url, 'source': 'collection', 'endpoint': 'listing.json', 'product': fallback}
+        discarded = normalize_product_images(fallback, url)
+        return {'url': url, 'source': 'collection', 'endpoint': 'listing.json',
+                'product': fallback,
+                'warnings': ([{'code': 'invalid_product_images_skipped',
+                              'url': url, 'count': len(discarded)}]
+                             if discarded else [])}
     raise CrawlError(f'商品详情 {url}: ' + '; '.join(errors))
+
+
+def detail_shopify_origin(detection):
+    """Return the separate data origin only for a proven headless storefront.
+
+    Ordinary Shopify themes sometimes retain an obsolete ``myshopify.com``
+    declaration after a domain/store migration.  Their public collection and
+    product JSON routes are authoritative, so redirecting PDP requests to that
+    declaration can silently cross into an unrelated legacy store.
+    """
+    if not isinstance(detection, dict):
+        return ''
+    if not (detection.get('headless_shopify')
+            or detection.get('mode') == 'hydrogen_shopify'):
+        return ''
+    origin = detection.get('shopify_origin', '')
+    return origin.rstrip('/') if isinstance(origin, str) and origin.startswith('https://') else ''
 
 
 FIELDS = ['Type', 'SKU', 'Name', 'Description', 'Sale price', 'Regular price', 'Categories', 'Tags', 'Images', 'Parent',
@@ -2307,9 +2455,9 @@ def run_products(root, all_products=False):
     client = Client()
     detection_file = root / 'detection.json'
     if detection_file.is_file():
-        detected_origin = read_json(detection_file).get('shopify_origin', '')
-        if isinstance(detected_origin, str) and detected_origin.startswith('https://'):
-            client.shopify_origin = detected_origin.rstrip('/')
+        detected_origin = detail_shopify_origin(read_json(detection_file))
+        if detected_origin:
+            client.shopify_origin = detected_origin
     checkpoint_file = root / 'product_checkpoint.json'
     checkpoint = read_json(checkpoint_file) if checkpoint_file.is_file() else {}
     version = release['navigation_version'] + ':' + binding['sha256']
@@ -2317,6 +2465,11 @@ def run_products(root, all_products=False):
         checkpoint = {'version': version, 'completed': {}}
     cache = root / 'evidence' / 'product-checkpoints'; cache.mkdir(parents=True, exist_ok=True)
     samples = []
+    failed_products = []
+    transient_failures = []
+    no_image_failures = []
+    if all_products and (root / 'failed_products.json').is_file():
+        (root / 'failed_products.json').unlink()
     save_json(root / 'product_run.json', {'status': 'running', 'planned': len(urls), 'navigation_version': release['navigation_version']})
     try:
         for index, url in enumerate(urls):
@@ -2327,10 +2480,36 @@ def run_products(root, all_products=False):
                 if sample.get('url') != url:
                     raise CrawlError('商品断点 URL 不匹配')
             else:
-                sample = fetch_product(client, url)
+                try:
+                    sample = fetch_product(client, url)
+                except CrawlError as error:
+                    message = str(error).casefold()
+                    transient = any(marker in message for marker in (
+                        'could not resolve host', 'name resolution', 'dns',
+                        'curl: (6)', 'curl: (28)', 'curl: (35)', 'curl: (56)',
+                        'ssl_connect', 'connection closed', 'connection reset',
+                        'timed out', 'timeout'))
+                    if not all_products or not transient:
+                        raise
+                    failed_products.append({'url': url, 'error': str(error),
+                                            'exception_type': type(error).__name__,
+                                            'code': 'transient_network_error'})
+                    transient_failures.append(failed_products[-1])
+                    save_json(root / 'failed_products.json', failed_products)
+                    continue
                 save_json(file, sample)
                 checkpoint['completed'][url] = {'sha256': digest(file)}
                 save_json(checkpoint_file, checkpoint)
+            if all_products and not product_gallery(sample['product']):
+                if not source_product_without_images(sample):
+                    raise CrawlError('商品源数据包含非法图片 URL: ' + url)
+                failure = {'url': url, 'error': '官方商品源数据 images 为空',
+                           'exception_type': 'SourceProductWithoutImages',
+                           'code': 'source_product_without_images'}
+                failed_products.append(failure)
+                no_image_failures.append(failure)
+                save_json(root / 'failed_products.json', failed_products)
+                continue
             save_json(root / 'evidence' / f'product-{sample["product"]["id"]}.json', sample['product'])
             samples.append(sample)
             print('product', index + 1, '/', len(urls), url, flush=True)
@@ -2338,6 +2517,33 @@ def run_products(root, all_products=False):
         save_json(root / 'product_run.json', {'status': 'failed', 'error': str(error), 'completed': len(samples), 'planned': len(urls)})
         raise
     save_json(root / 'samples.json', samples)
+    image_warnings = [warning for sample in samples for warning in sample.get('warnings', [])]
+    if image_warnings:
+        warnings_path = root / 'warnings.json'
+        warnings = read_json(warnings_path) if warnings_path.is_file() else []
+        warnings.extend(image_warnings)
+        save_json(warnings_path, warnings)
+    if failed_products:
+        ratio = len(failed_products) / max(1, len(urls))
+        warnings_path = root / 'warnings.json'
+        warnings = read_json(warnings_path) if warnings_path.is_file() else []
+        if transient_failures:
+            warnings.append({'code': 'transient_products_skipped',
+                             'message': '个别商品临时网络失败；已保留成功断点并继续导出',
+                             'failed': len(transient_failures), 'planned': len(urls),
+                             'ratio': round(len(transient_failures) / max(1, len(urls)), 4)})
+        if no_image_failures:
+            warnings.append({'code': 'products_without_images_skipped',
+                             'message': '官方源数据本身没有图片的少量商品已跳过；其余商品继续导出',
+                             'failed': len(no_image_failures), 'planned': len(urls),
+                             'ratio': round(len(no_image_failures) / max(1, len(urls)), 4),
+                             'urls': [item['url'] for item in no_image_failures]})
+        save_json(warnings_path, warnings)
+        if len(samples) < 3 or ratio > .20:
+            save_json(root / 'product_run.json', {'status': 'failed',
+                      'error': '临时网络失败比例超过 20%',
+                      'completed': len(samples), 'planned': len(urls)})
+            raise CrawlError('全量商品临时网络失败比例超过 20%')
     scope = read_json(root / 'sample_scope.json')
     scope['detail_scope'] = 'all_products' if all_products else 'first_3_products'
     save_json(root / 'sample_scope.json', scope)
@@ -2350,4 +2556,6 @@ def run_products(root, all_products=False):
         save_json(root / 'product_run.json', {'status': 'failed', 'error': str(error), 'completed': len(samples)})
         raise
     save_json(root / 'product_run.json', {'status': 'completed', 'validation': result, 'navigation_version': release['navigation_version']})
+    client.clear_cache()
+    gc.collect()
     return result

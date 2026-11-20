@@ -77,6 +77,9 @@ class RepairTests(unittest.TestCase):
             self.assertIn('--ephemeral', command)
             self.assertIn('--approve-for-me', command)
             self.assertIn('--trust', command)
+            # This CLI version makes --approve-for-me select its writable
+            # workspace sandbox; passing --sandbox as well is rejected.
+            self.assertNotIn('--sandbox', command)
             self.assertIn('code_mode', command)
             self.assertIn('code_mode_host', command)
             self.assertNotIn('approval_policy=never', command)
@@ -88,6 +91,12 @@ class RepairTests(unittest.TestCase):
             self.assertNotIn('shell_tool', command)
             self.assertNotIn('CODEX_THREAD_ID', kwargs['env'])
             self.assertEqual(kwargs['env'].get('AI_REPAIR_TEST_KEEP'), 'yes')
+            self.assertEqual(kwargs['env']['PATH'].split(os.pathsep)[0],
+                             str(Path(sys.executable).resolve().parent))
+            scope = read_json(work / 'sample_scope.json')
+            self.assertEqual(scope['detail_scope'], 'first_3_products')
+            self.assertEqual(scope['listing_scope'], 'selected')
+            self.assertEqual(len(scope['selected_categories']), 1)
             process = MagicMock(returncode=0)
             def communicate(prompt, timeout):
                 self.assertIn('check_sample.py', prompt)
@@ -127,6 +136,35 @@ class RepairTests(unittest.TestCase):
                 with self.assertRaisesRegex(CrawlError, '已启动过一次'):
                     repair_sample(root, 'try again')
                 second.assert_not_called()
+
+    def test_full_task_is_narrowed_only_inside_repair_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepare_root(root)
+            full_scope = read_json(root / 'sample_scope.json')
+            full_scope.update(
+                selected_categories={
+                    'Shop': BASE + '/collections/shop',
+                    'Other': BASE + '/collections/other'},
+                listing_scope='all', detail_scope='all_products')
+            save_json(root / 'sample_scope.json', full_scope)
+            save_json(root / 'url.json', full_scope['selected_categories'])
+            with patch('core.ai_repair.shutil.which', return_value='codex.exe'), patch.dict(
+                    os.environ, {'AI_REPAIR_TEST_KEEP': 'yes'}), patch(
+                    'core.ai_repair.subprocess.Popen',
+                    side_effect=self.fake_cli(root, write_candidate)):
+                repair_sample(root, 'full task repair')
+            published = read_json(root / 'sample_scope.json')
+            self.assertEqual(published['detail_scope'], 'first_3_products')
+            self.assertEqual(len(published['selected_categories']), 1)
+
+    def test_listing_dom_accepts_singular_product_path(self):
+        from core.shopify_fastpath import listing_dom
+        html = ('<main><div class="product-grid">'
+                '<a href="/product/one">One</a>'
+                '<a href="/product/two">Two</a></div></main>')
+        slugs, _, _ = listing_dom(html, BASE + '/category')
+        self.assertEqual(slugs, ['one', 'two'])
 
     def test_invalid_candidate_keeps_existing_artifacts_and_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:

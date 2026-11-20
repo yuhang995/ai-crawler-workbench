@@ -38,6 +38,24 @@ class Reply:
 
 
 class MobifyTests(unittest.TestCase):
+    def test_new_pwa_header_category_links_replace_legacy_main_nav(self):
+        raw = state([])
+        raw['__PRELOADED_STATE__']['__reactQuery']['queries'] = [
+            {'queryKey': ['nav-categories', 'en-US'],
+             'state': {'data': {'categories': []}}}]
+        html = ('<html><header><nav>'
+                '<a href="/en-us/category/products/">Products</a>'
+                '<a href="/en-us/category/products/vacuums/">Vacuums</a>'
+                '<a href="/en-us/category/products/vacuums/upright/">Upright Vacuums</a>'
+                '</nav></header><script id="mobify-data" type="application/json">'
+                + json.dumps(raw) + '</script></html>')
+        self.assertEqual(navigation(html, 'https://example.com/'), {
+            'Products': 'https://example.com/en-us/category/products/',
+            'Products,Products Vacuums': 'https://example.com/en-us/category/products/vacuums/',
+            ('Products,Products Vacuums,Products Vacuums Upright Vacuums'):
+                'https://example.com/en-us/category/products/vacuums/upright/',
+        })
+
     def test_navigation_uses_structured_menu_and_drops_explore_and_product_cards(self):
         root = {'title': 'Fire Pits', 'url_custom': {'internal': '/plp/fire-pits'},
                 'secondary_links': [{'display_title': 'Explore', 'link': [

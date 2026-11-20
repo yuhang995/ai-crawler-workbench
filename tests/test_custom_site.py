@@ -1,14 +1,110 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from core.common import save_json
-from core.custom_site import demandware_navigation, identify_platform
+from core.common import CrawlError, read_json, save_json
+from core.custom_site import (_distinct_samples, demandware_navigation,
+                              identify_platform, run_custom_sample)
 from core.validator import verify_source_mapping
 
 
 class CustomSiteTests(unittest.TestCase):
+    def test_full_detail_retries_transient_tls_without_hiding_data_errors(self):
+        url = 'https://example.com/product.html'
+        sample = {'url': url, 'product': {'id': 'p1'}}
+        transient = CrawlError('请求失败 https://example.com/product.html: curl: (35) SSL_connect connection closed')
+        product = Mock(side_effect=[transient, sample])
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.custom_site.time.sleep'), patch(
+                'core.custom_site._preserve_product_source'):
+            values = _distinct_samples(object(), Path(directory), product, [url], {}, None)
+        self.assertEqual(values, [sample])
+        self.assertEqual(product.call_count, 2)
+
+        invalid = Mock(side_effect=CrawlError('商品价格与源响应不一致'))
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+                CrawlError, '价格'):
+            _distinct_samples(object(), Path(directory), invalid, [url], {}, None)
+        self.assertEqual(invalid.call_count, 1)
+
+    def test_full_detail_retries_transient_dns_and_reuses_checkpoint(self):
+        url = 'https://example.com/product.html'
+        sample = {'url': url, 'product': {'id': 'p1'}}
+        dns = CrawlError('request 请求失败: curl: (6) Could not resolve host')
+        product = Mock(side_effect=[dns, sample])
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.custom_site.time.sleep'), patch(
+                'core.custom_site._preserve_product_source'):
+            root = Path(directory)
+            values = _distinct_samples(object(), root, product, [url], {}, None)
+            self.assertEqual(values, [sample])
+            self.assertEqual(product.call_count, 2)
+            cached_product = Mock(side_effect=AssertionError('checkpoint must avoid network'))
+            values = _distinct_samples(object(), root, cached_product, [url], {}, None)
+            self.assertEqual(values, [sample])
+            cached_product.assert_not_called()
+
+    def test_full_store_records_one_exhausted_network_product_and_continues(self):
+        urls = [f'https://example.com/p{i}.html' for i in range(6)]
+        failed_url = urls[-1]
+        def collect(client, url):
+            return {'url': url, 'urls': urls, 'catalog_urls': urls,
+                    'complete': True, 'pages': []}
+        def product(client, url, evidence):
+            if url == failed_url:
+                raise CrawlError('请求失败: curl: (6) Could not resolve host')
+            number = urls.index(url) + 1
+            return {'url': url, 'product': {'id': f'p{number}', 'warnings': []},
+                    'source_mapping': {'kind': 'fixture'}}
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.custom_site._collectors', return_value=(collect, product)), patch(
+                'core.custom_site._native_identity', return_value=True), patch(
+                'core.custom_site._preserve_product_source'), patch(
+                'core.custom_site._save_market_evidence'), patch(
+                'core.custom_site.time.sleep'):
+            root = Path(directory)
+            _, _, _, samples, _ = run_custom_sample(
+                object(), root, 'magento', [('Shop', 'https://example.com/shop')],
+                all_categories=True, full_products=True)
+            self.assertEqual(len(samples), 5)
+            failures = read_json(root / 'failed_products.json')
+            self.assertEqual(failures, [{'url': failed_url,
+                'error': '请求失败: curl: (6) Could not resolve host',
+                'exception_type': 'CrawlError'}])
+            self.assertEqual(read_json(root / 'warnings.json')[0]['code'],
+                             'transient_products_skipped')
+
+    def test_full_custom_store_skips_empty_parent_but_keeps_leaf_categories(self):
+        parent = 'https://example.com/accessories'
+        child = parent + '/hats'
+        product_url = 'https://example.com/hat.html'
+        categories = [('Accessories', parent), ('Accessories,Accessories Hats', child)]
+        def collect(client, url):
+            if url == parent:
+                raise CrawlError('Magento 分类页没有可验证的商品网格: ' + url)
+            return {'url': url, 'urls': [product_url], 'catalog_urls': [product_url],
+                    'complete': True, 'pages': [{'url': url, 'html': '<main></main>'}]}
+        sample = {'url': product_url, 'product': {
+            'id': 'hat-1', 'handle': 'hat', 'title': 'Hat', 'body_html': '',
+            'vendor': '', 'product_type': '', 'tags': [], 'options': [], 'images': [],
+            'variants': [{'id': 'hat-1', 'sku': 'hat-1', 'price': '10.00',
+                          'compare_at_price': None, 'available': True, 'option1': None,
+                          'option2': None, 'option3': None, 'featured_image': None}],
+            'warnings': []}, 'source_mapping': {'kind': 'fixture'}}
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.custom_site._collectors', return_value=(collect, lambda *args: sample)), patch(
+                'core.custom_site._native_identity', return_value=True), patch(
+                'core.custom_site._preserve_product_source'), patch(
+                'core.custom_site._save_market_evidence'):
+            root = Path(directory)
+            selected, detail, listings, samples, attempts = run_custom_sample(
+                object(), root, 'magento', categories, all_categories=True, full_products=True)
+            self.assertEqual(selected, {'Accessories,Accessories Hats': child})
+            self.assertEqual(detail, {'Accessories,Accessories Hats': [product_url]})
+            self.assertEqual(len(samples), 1)
+            self.assertEqual(attempts[0]['status'], 'content_landing_skipped')
+            self.assertEqual(attempts[1]['status'], 'selected')
     def test_native_platform_does_not_probe_incidental_shopify_links(self):
         from core.detector import detect
 

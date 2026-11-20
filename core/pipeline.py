@@ -1,20 +1,25 @@
 """Single pass task orchestration: detect → scope/sample → validate → package."""
 import json
+import gc
+import hashlib
 import re
 import shutil
+import subprocess
+import sys
 import time
 import traceback
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlsplit
 from .common import (Client, CrawlError, AdapterRequired, save_json, read_json,
                      split_category_key, AccessChallenge, redact_proxy,
-                     redact_sensitive)
+                     redact_sensitive, TaskCancelled)
 from .nav_extractor import extract_navigation, needs_dynamic, expand_menus
 from .detector import detect
 from .shopify_fastpath import (collect_listing, fetch_product, export,
-                               merge_explicit_colorways, _large_document_get)
+                               merge_explicit_colorways, _large_document_get,
+                               ListingCollectionTimeout)
 from .validator import validate, validate_navigation
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -36,7 +41,7 @@ def retryable_sample_verification_error(error):
     return any(marker in message for marker in _RETRYABLE_SAMPLE_ERRORS)
 
 
-def compact_shopify_listing_evidence(listing):
+def compact_shopify_listing_evidence(listing, evidence_root=None):
     """Drop redundant rich product/HTML payloads from feed-order evidence.
 
     The validator needs immutable product identity, complete feed page sizes and
@@ -44,6 +49,20 @@ def compact_shopify_listing_evidence(listing):
     separately from each product endpoint, so repeating them across a hundred
     overlapping collections only wastes memory and can make json.dumps fail.
     """
+    if evidence_root is not None:
+        evidence_root = Path(evidence_root)
+        evidence_root.mkdir(parents=True, exist_ok=True)
+        for page in listing.get('pages', []):
+            html = page.get('html')
+            if not isinstance(html, str) or not html:
+                continue
+            fingerprint = hashlib.sha256(
+                (str(page.get('url', '')) + '\0' + html).encode('utf-8')).hexdigest()[:24]
+            target = evidence_root / f'{fingerprint}.html'
+            if not target.exists():
+                target.write_text(html, encoding='utf-8')
+            page['html_file'] = 'evidence/listing-pages/' + target.name
+            page['html'] = ''
     if (listing.get('order_evidence') != 'products_feed_fallback'
             or listing.get('membership_sources')):
         return listing
@@ -96,6 +115,125 @@ def default_sample_candidates(categories, limit=3):
     return result
 
 
+def content_landing_parent_urls(categories):
+    """Return URLs whose emitted navigation node owns real descendants."""
+    items = list(categories.items())
+    return {url for key, url in items
+            if any(other.startswith(key + ',') for other, _ in items)}
+
+
+def direct_shopify_product_scope(detection, categories):
+    """Recognize a Shopify storefront whose complete shop scope is direct PDPs.
+
+    Very small stores can link their only purchasable item from the primary
+    navigation and expose no collection route. Detection can then retain
+    ``shopify=True`` while classifying the shell as ``custom_site``. Those
+    first-party product URLs belong on the deterministic Shopify product JSON
+    path, not in generic AI repair.
+    """
+    if not detection.get('shopify') or not categories:
+        return False
+    return all(re.fullmatch(r'/products/[^/]+/?', urlsplit(url).path, re.I)
+               for url in categories.values())
+
+
+def collect_full_shopify_listings(client, categories, evidence_root=None,
+                                   skip_non_collection_landings=False,
+                                   progress=None, max_workers=4):
+    """Collect every product-bearing collection and skip proven parent landings.
+
+    A menu parent may be a campaign/collection landing with no finite product
+    grid while its emitted child categories contain the actual catalog.  Only
+    that structural failure is downgraded, and only when the URL owns a real
+    descendant in the published navigation tree.
+    """
+    parents = content_landing_parent_urls(categories)
+    has_real_collections = any('/collections/' in urlsplit(value).path
+                               for value in categories.values())
+    urls = list(dict.fromkeys(categories.values()))
+
+    def collect_one(index, url):
+        try:
+            try:
+                value = collect_listing(client, url, prefer_feed_order=True,
+                                        max_seconds=180)
+            except TypeError as error:
+                # Historical adapters/test doubles expose the older signature.
+                if 'unexpected keyword argument' not in str(error):
+                    raise
+                value = collect_listing(client, url, prefer_feed_order=True)
+            value = compact_shopify_listing_evidence(value, evidence_root)
+            return index, url, 'success', value, None
+        except Exception as error:
+            return index, url, 'error', None, error
+
+    # Collection membership requests are independent. A bounded pool prevents
+    # a 100+ category store from spending several seconds serially on every
+    # overlapping menu collection while Client still owns global pacing,
+    # cooldown and per-domain access recovery.
+    outcomes = {}
+    workers = max(1, min(int(max_workers or 1), 4, len(urls)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(collect_one, index, url): (index, url)
+                   for index, url in enumerate(urls)}
+        done = 0
+        for future in as_completed(futures):
+            index, url, status, value, error = future.result()
+            outcomes[index] = (url, status, value, error)
+            done += 1
+            if progress:
+                progress(done, len(urls), url, status)
+
+    values, successful, warnings, deferred_empty, deferred_timeout = [], [], [], [], []
+    for index in range(len(urls)):
+        url, status, value, error = outcomes[index]
+        if status == 'success':
+            successful.append(url)
+            values.append(value)
+            continue
+        if isinstance(error, ListingCollectionTimeout):
+            deferred_timeout.append((url, str(error), error))
+            continue
+        if isinstance(error, AdapterRequired):
+            message = str(error)
+            landing = ('落地页既无完整子集合来源' in message
+                       or '落地页商品未被显式子集合完整覆盖' in message)
+            content_landing = (skip_non_collection_landings and has_real_collections
+                               and '/collections/' not in urlsplit(url).path
+                               and '/products/' not in urlsplit(url).path
+                               and '/product/' not in urlsplit(url).path)
+            empty_collection = (skip_non_collection_landings
+                                and '/collections/' in urlsplit(url).path
+                                and landing)
+            if empty_collection:
+                deferred_empty.append((url, message, error))
+                continue
+            if not content_landing and (url not in parents or not landing):
+                raise error
+            warnings.append({'code': 'content_landing_skipped',
+                             'message': '父级导购页没有独立完整商品网格；已保留下级真实分类继续全量采集',
+                             'url': url, 'reason': message})
+            continue
+        raise error
+    if deferred_empty:
+        if not values:
+            raise deferred_empty[0][2]
+        warnings.extend({
+            'code': 'empty_or_landing_collection_skipped',
+            'message': '集合 Feed 为空且前端无可验证商品；已保留其他正常集合继续全量采集',
+            'url': url, 'reason': message,
+        } for url, message, _ in deferred_empty)
+    if deferred_timeout:
+        if not values:
+            raise deferred_timeout[0][2]
+        warnings.extend({
+            'code': 'listing_collection_timeout_skipped',
+            'message': '单个超大分类超过 180 秒上限；已保留其他正常分类继续全量采集',
+            'url': url, 'reason': message,
+        } for url, message, _ in deferred_timeout)
+    return successful, values, warnings
+
+
 def prepare_runtime(root):
     dest = Path(root) / 'core'
     dest.mkdir(exist_ok=True)
@@ -138,12 +276,14 @@ def package(root, report=None, started=None):
     return target
 
 
-def run_job(site, root, manual=False, confirm=None, emit=None, category=None, all_categories=False, force_ai=False, dynamic=True, navigation_mode="simple", reuse_navigation=False, full_products=False, visual_check=False, uploaded_categories=None, proxy=None):
+def run_job(site, root, manual=False, confirm=None, emit=None, category=None, all_categories=False, force_ai=False, dynamic=True, navigation_mode="simple", reuse_navigation=False, full_products=False, visual_check=False, uploaded_categories=None, proxy=None, use_proxy_pool=False, cancel_event=None):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     (root / 'evidence').mkdir(exist_ok=True)
     start = time.perf_counter()
     def event(stage, message, **extra):
+        if stage != 'cancelled' and cancel_event is not None and cancel_event.is_set():
+            raise TaskCancelled('任务已由用户取消')
         data = {'stage': stage, 'message': message, 'elapsed': round(time.perf_counter() - start, 3), **extra}
         if emit:
             emit(data)
@@ -153,7 +293,17 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
         if full_products and manual:
             raise CrawlError('全自动全量模式不能同时启用手动确认')
         all_categories = all_categories or full_products
-        client = Client(proxy=proxy) if proxy else Client()
+        # Keep compatibility with the small zero-argument Client doubles used
+        # by adapters and the historical replay/unit-test suite.  New transport
+        # options are passed only when the caller actually enables them.
+        client_options = {}
+        if proxy:
+            client_options['proxy'] = proxy
+        if use_proxy_pool:
+            client_options['proxy_pool'] = True
+        if cancel_event is not None:
+            client_options['cancel_event'] = cancel_event
+        client = Client(**client_options) if client_options else Client()
         if '://' not in site:
             site = 'https://' + site
         p = urlsplit(site)
@@ -369,6 +519,7 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                 'sample_candidates': [{'category': key, 'url': url} for key, url in sample_candidates],
                 'selection_attempts': selection_attempts})
         write_sample_scope()
+        direct_product_scope = direct_shopify_product_scope(detection, selected)
         def ai_fallback(reason):
             from .ai_worker import run_once
             event('ai', '非标路径：启动商品适配会话')
@@ -429,7 +580,32 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                 'prediagnosis': prediagnosis,
             }
             save_json(root / 'evidence' / 'repair_failure_context.json', context)
+            full_scope = read_json(root / 'sample_scope.json')
             recover(root, str(error))
+            if full_products:
+                # The model is deliberately validated on one category and
+                # three parents.  Only the host may expand the adopted,
+                # validated scripts back to the user's original full scope.
+                save_json(root / 'sample_scope.json', dict(
+                    full_scope, selection_status='repaired_full_running'))
+                link_result = subprocess.run(
+                    [sys.executable, str(root / 'get_detail_url.py')], cwd=root,
+                    capture_output=True, text=True, encoding='utf-8', timeout=900)
+                if link_result.returncode:
+                    raise CrawlError('修复后全量列表采集失败: ' +
+                                     (link_result.stderr or link_result.stdout)[-2000:])
+                from .navigation_release import digest
+                save_json(root / 'detail_release.json', {
+                    'navigation_version': release['navigation_version'],
+                    'sha256': digest(root / 'detail_url.json')})
+                product_result = subprocess.run(
+                    [sys.executable, str(root / 'crawl_products.py'), '--all'], cwd=root,
+                    capture_output=True, text=True, encoding='utf-8', timeout=3600)
+                if product_result.returncode:
+                    raise CrawlError('修复后全量商品采集失败: ' +
+                                     (product_result.stderr or product_result.stdout)[-2000:])
+                from .ai_repair import _check_candidate
+                _check_candidate(root, full_scope)
             detail = read_json(root / 'detail_url.json')
             selected = {key: categories[key] for key in detail}
             # Bind repaired detail scope to the already-published navigation.
@@ -445,9 +621,25 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
             nonlocal selected
             listings, detail, samples = {}, {}, None
             event('listing', '按分类顺序读取前端网格与 JSON，共享限速和访问恢复状态')
+            if direct_product_scope:
+                # There is no collection listing to parse. The official product
+                # JSON proves both identity and membership for this exact menu URL.
+                unique = list(dict.fromkeys(selected.values()))
+                with ThreadPoolExecutor(max_workers=min(3, len(unique))) as pool:
+                    samples = list(pool.map(lambda u: fetch_product(client, u), unique))
+                values = []
+                by_sample = {sample['url']: sample for sample in samples}
+                for url in unique:
+                    product = by_sample[url]['product']
+                    values.append({
+                        'format': 'direct_product', 'url': url, 'urls': [url],
+                        'products': [product], 'feeds': [{'products': [product]}],
+                        'pages': [], 'card_sources': [], 'warnings': [],
+                        'complete': True,
+                    })
             # Only implicit single-category sampling retries. Explicit category
             # requests and all-category/full-product jobs retain their exact scope.
-            if not category and not all_categories:
+            elif not category and not all_categories:
                 values = None
                 last_retryable_error = None
                 for key, url in sample_candidates:
@@ -521,12 +713,18 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                     raise CrawlError(message)
             else:
                 unique = list(dict.fromkeys(selected.values()))
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    if full_products and all_categories:
-                        values = list(pool.map(
-                            lambda u: collect_listing(client, u, prefer_feed_order=True),
-                            unique))
-                    else:
+                skipped_landing_warnings = []
+                if full_products and all_categories:
+                    unique, values, skipped_landing_warnings = collect_full_shopify_listings(
+                        client, selected, root / 'evidence' / 'listing-pages',
+                        skip_non_collection_landings=(detection['mode'] == 'standard_shopify'),
+                        progress=lambda done, total, url, status: event(
+                            'listing', f'全量分类进度 {done}/{total}',
+                            progress=48 + int(12 * done / max(1, total)),
+                            current_url=url, collection_status=status))
+                    selected = {key: url for key, url in selected.items() if url in set(unique)}
+                else:
+                    with ThreadPoolExecutor(max_workers=1) as pool:
                         # Preserve the historical adapter call contract for
                         # explicit-category and bounded sample runs.
                         values = list(pool.map(lambda u: collect_listing(client, u), unique))
@@ -538,6 +736,7 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                     for warning in value.get('warnings',[]):warn(root,warning['code'],warning['message'],url=warning.get('url'))
             elif simple:
                 runtime_warnings = read_json(root/'warnings.json') if (root/'warnings.json').is_file() else []
+                runtime_warnings.extend(skipped_landing_warnings if 'skipped_landing_warnings' in locals() else [])
                 fingerprints = {json.dumps(item, ensure_ascii=False, sort_keys=True) for item in runtime_warnings}
                 for value in values:
                     for warning in value.get('warnings', []):
@@ -555,7 +754,8 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
             save_json(root / 'detail_release.json', {'navigation_version': release['navigation_version'],
                                                     'sha256': digest(root / 'detail_url.json')})
             urls = list(dict.fromkeys(u for links in detail.values() for u in links))[:3]
-            if not urls or (not full_products and len(urls) != 3):
+            if not urls or (not full_products and len(urls) != 3
+                            and not direct_product_scope):
                 raise CrawlError('所选分类不足三个不同商品，请选更大的分类')
             if samples is None:
                 by_handle = {p['handle']: p for listing in values for p in listing['products']}
@@ -608,7 +808,7 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                 'sha256': digest(root / 'detail_url.json')})
             export(samples, detail, root)
         elif (detection['mode'] == 'custom_site' and not detection.get('custom_platform')
-              and not force_ai):
+              and not direct_product_scope and not force_ai):
             from .custom_navigation import detect_catalog_only
             catalog = detect_catalog_only(client, base, categories, root / 'evidence')
             save_json(root / 'catalog_only.json', catalog)
@@ -634,7 +834,8 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                     '目录型品牌站没有公开价格或购买变体；已保存 catalog_only.json，'
                     '不启动商品 AI，避免编造价格')
             samples = repair_sample(AdapterRequired(detection['mode']))
-        elif detection['mode'] not in {'standard_shopify', 'hydrogen_shopify'} or force_ai:
+        elif (detection['mode'] not in {'standard_shopify', 'hydrogen_shopify'}
+              and not direct_product_scope) or force_ai:
             samples = repair_sample(AdapterRequired('explicit custom handling' if force_ai else detection['mode']))
         else:
             if not detection['market']['confirmed']:
@@ -653,7 +854,10 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                     raise
                 samples = repair_sample(error)
                 export(samples, read_json(root / 'detail_url.json'), root)
-        if full_products and detection['mode'] in {'standard_shopify', 'hydrogen_shopify'} and not force_ai:
+        if (full_products
+                and (detection['mode'] in {'standard_shopify', 'hydrogen_shopify'}
+                     or direct_product_scope)
+                and not force_ai):
             from .shopify_fastpath import run_products
             event('products', '目录和列表已通过，自动采集全部去重商品；保存可续跑断点')
             result = run_products(root, all_products=True)
@@ -722,6 +926,12 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
         package(root, report, start)
         event('completed', '验证通过，独立运行包已生成', report=report)
         return report
+    except TaskCancelled as e:
+        cancelled = {'status': 'cancelled', 'error': str(e),
+                     'seconds': round(time.perf_counter() - start, 3)}
+        save_json(root / 'cancelled.json', cancelled)
+        event('cancelled', str(e))
+        raise
     except AccessChallenge as e:
         state = read_json(root / 'navigation_release.json')
         if state.get('status') != 'approved':
@@ -748,3 +958,11 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
         save_json(root / 'failure.json', failure)
         event('failed', message)
         raise
+    finally:
+        if 'client' in locals():
+            clear_cache = getattr(client, 'clear_cache', None)
+            if callable(clear_cache):
+                clear_cache()
+            elif hasattr(client, 'cache'):
+                client.cache.clear()
+        gc.collect()

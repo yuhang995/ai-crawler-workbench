@@ -78,9 +78,69 @@ def _header(data):
     raise CrawlError('Mobify 首页缺少 main_nav')
 
 
+def _visible_category_navigation(html, base):
+    """Recover newer PWA Kit menus from the rendered header links.
+
+    Recent PWA Kit builds expose ``nav-categories`` instead of Contentstack's
+    legacy ``main_nav``.  The server-rendered header still contains the exact
+    visible category anchors, so use their URL-prefix ownership rather than
+    importing every (including hidden) category from the backend state.
+    """
+    soup = parse_soup(html, 'lxml')
+    header = soup.find('header')
+    if header is None:
+        return {}
+    observed = []
+    seen = set()
+    for anchor in header.select('a[href]'):
+        target = _internal(anchor.get('href'), base)
+        path = urlsplit(target).path.rstrip('/') if target else ''
+        if (not target or '/category/' not in path.casefold()
+                or path in seen):
+            continue
+        label = ' '.join(anchor.get_text(' ', strip=True).split())
+        if not label:
+            continue
+        seen.add(path)
+        observed.append((path, label, target))
+    by_path = {path: label for path, label, _ in observed}
+    result = {}
+    for path, label, target in observed:
+        category_root, tail = path.split('/category/', 1)
+        segments = [part for part in tail.split('/') if part]
+        labels = []
+        for index in range(len(segments)):
+            prefix = category_root + '/category/' + '/'.join(segments[:index + 1])
+            parent = by_path.get(prefix)
+            if parent:
+                labels.append(parent)
+        if not labels:
+            labels = [label]
+        elif labels[-1] != label:
+            labels.append(label)
+        # Preserve root and immediate group; flatten deeper visible leaves to
+        # the third level as required by the category JSON contract.
+        if len(labels) > 3:
+            labels = labels[:2] + [labels[-1]]
+        result.setdefault(_key(labels), target)
+    return result
+
+
 def navigation(html, base, client=None, evidence_dir=None):
     """Read Contentstack's explicit menu; omit the editorial Explore column."""
-    header = _header(_state(html))
+    data = _state(html)
+    try:
+        header = _header(data)
+    except CrawlError:
+        result = _visible_category_navigation(html, base)
+        if not result:
+            raise
+        if evidence_dir:
+            save_json(Path(evidence_dir) / 'mobify-navigation.json', {
+                'source': 'visible_header_category_links',
+                'categories': result,
+            })
+        return result
     result = {}
     for menu in header['main_nav']:
         for root in menu.get('link', []) if isinstance(menu, dict) else []:

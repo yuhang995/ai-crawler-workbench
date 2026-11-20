@@ -46,6 +46,20 @@ class FakeClient:
 
 
 class MagentoStorefrontTests(unittest.TestCase):
+    def test_hyva_simple_product_uses_form_sku_and_price_box(self):
+        source = '''<body class="region-us catalog-product-view">
+        <meta property="product:price:currency" content="USD">
+        <h1>Care Kit</h1><form id="product_addtocart_form" data-product-sku="CARE-15">
+        <input name="product" value="23069"><span data-price-type="finalPrice"
+        data-price-amount="14.95"></span></form>
+        <img data-index="0" src="https://example.com/media/catalog/product/care.jpg">
+        </body>'''
+        product = _normalize({'url': 'https://example.com/care-kit', 'html': source})
+        self.assertEqual(product['variants'][0]['sku'], 'CARE-15')
+        self.assertEqual(product['variants'][0]['price'], '14.95')
+        self.assertEqual(product['images'][0]['src'],
+                         'https://example.com/media/catalog/product/care.jpg')
+
     def test_data_attribute_config_four_dimensions_and_missing_images(self):
         soup = parse_soup(product_html())
         config = json.loads(soup.find('script').string)['*']['swatches']['jsonConfig']

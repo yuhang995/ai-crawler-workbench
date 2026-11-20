@@ -1,5 +1,7 @@
 """Validate artifacts and raw response content, never selector proofs or host hashes."""
 import csv
+import hashlib
+import sys
 import time
 from collections import Counter
 from decimal import Decimal
@@ -17,7 +19,30 @@ from .shopify_fastpath import (listing_dom, money, handle, variant_images,
                                hydrogen_group_products, merged_options, product_categories)
 
 
-def source_order(listing):
+def _allow_large_csv_fields():
+    """Raise the stdlib CSV parser limit for evidence-backed rich descriptions."""
+    limit = min(sys.maxsize, 64 * 1024 * 1024)
+    try:
+        csv.field_size_limit(limit)
+    except OverflowError:  # pragma: no cover - relevant only on narrow C longs
+        csv.field_size_limit(2 ** 31 - 1)
+
+
+_allow_large_csv_fields()
+
+
+def _page_html(page, root=None):
+    html = page.get('html', '')
+    if html or not page.get('html_file') or root is None:
+        return html
+    target = (Path(root) / page['html_file']).resolve()
+    evidence = (Path(root) / 'evidence').resolve()
+    if not _is_relative_to(target, evidence) or not target.is_file():
+        raise CrawlError('分类 HTML 证据文件缺失或越界')
+    return target.read_text(encoding='utf-8')
+
+
+def source_order(listing, root=None):
     """Independently rebuild a non-DOM listing order from saved source evidence."""
     products, order, seen_ids, handles = [], [], set(), {}
     for feed in listing.get('feeds', []):
@@ -48,7 +73,7 @@ def source_order(listing):
             raise CrawlError('筛选目录或无警告记录不得使用 Feed 顺序兜底')
         expected = order
     elif evidence == 'embedded_handles':
-        observed = embedded_product_handles(pages[0]['html'], products, pages[0]['url'])
+        observed = embedded_product_handles(_page_html(pages[0], root), products, pages[0]['url'])
         if len(observed) < 3:
             raise CrawlError('内嵌商品顺序证据不足')
         present = set(observed)
@@ -253,6 +278,21 @@ def validate_navigation(categories, documents, base, evidence=None):
 def validate_samples(detail, samples, listings, rows, full=False, root=None):
     from .custom_site import ordered_product_urls
     expected_urls = ordered_product_urls(detail, listings)
+    if full and root is not None and (Path(root) / 'failed_products.json').is_file():
+        failures = read_json(Path(root) / 'failed_products.json')
+        no_image_failures = [item for item in failures if isinstance(item, dict)
+                             and item.get('code') == 'source_product_without_images']
+        if no_image_failures:
+            warnings_path = Path(root) / 'warnings.json'
+            warnings = read_json(warnings_path) if warnings_path.is_file() else []
+            matching = next((warning for warning in warnings
+                             if warning.get('code') == 'products_without_images_skipped'), None)
+            if (not matching or matching.get('failed') != len(no_image_failures)
+                    or set(matching.get('urls', []))
+                    != {item.get('url') for item in no_image_failures}):
+                raise CrawlError('无图商品跳过记录与审计警告不一致')
+        failed_urls = {item.get('url') for item in failures if isinstance(item, dict)}
+        expected_urls = [url for url in expected_urls if url not in failed_urls]
     if not full:
         expected_urls = expected_urls[:3]
     if (not expected_urls or (not full and len(expected_urls) != 3)
@@ -320,7 +360,7 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
             next_url, seen_urls = listing.get('url'), set()
             parent_cards = None
             for page in listing.get('pages', []):
-                parsed = _hydrogen_collection_page(page.get('html', ''), page.get('url', ''),
+                parsed = _hydrogen_collection_page(_page_html(page, root), page.get('url', ''),
                                                    page.get('router_response'))
                 if parsed is None or parsed['handles'] != page.get('handles'):
                     raise CrawlError('Hydrogen 分类页证据无法复建')
@@ -353,7 +393,7 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
         if listing.get('card_sources'):
             from .shopify_fastpath import curated_card_handles
             first = listing['pages'][0]
-            declared = curated_card_handles(first['html'], first['url'])
+            declared = curated_card_handles(_page_html(first, root), first['url'])
             cards = listing['card_sources']
             observed_cards = {}
             for source in cards:
@@ -369,7 +409,7 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
         if listing.get('membership_sources'):
             from .shopify_fastpath import landing_collection_links
             first = listing['pages'][0]
-            children = set(landing_collection_links(first['html'], first['url']))
+            children = set(landing_collection_links(_page_html(first, root), first['url']))
             sources = listing['membership_sources']
             if {s['url'] for s in sources} != children:
                 raise CrawlError('落地页子集合来源与真实链接不一致')
@@ -378,11 +418,11 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
             if any(not s['feeds'] or len(s['feeds'][-1]['products']) >= s['page_size'] for s in sources):
                 raise CrawlError('落地页子集合分页不完整')
         if listing.get('order_evidence', 'html_dom') != 'html_dom':
-            front = source_order(listing)
+            front = source_order(listing, root)
         else:
             front, seen = [], set()
             for page in listing['pages']:
-                slugs, _, _ = listing_dom(page['html'], page['url'])
+                slugs, _, _ = listing_dom(_page_html(page, root), page['url'])
                 for slug in slugs:
                     if slug not in feed_by_handle:
                         continue  # The contract is HTML ∩ collection feed, preserving HTML order.
@@ -393,6 +433,7 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
         if [handle(u) for u in links] != front:
             raise CrawlError('商品列表与前端顺序/范围不符: ' + key)
     expected = {}
+    product_checks = {}
     for sample in samples:
         p, source = sample['product'], sample['source']
         if (not sample.get('source_mapping') and handle(sample['url']) != p['handle']) or not p.get('title'):
@@ -401,6 +442,15 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
         if not variants or (len(variants) >= 250 and
                             not source_adapter((sample.get('source_mapping') or {}).get('kind'))):
             raise CrawlError('样本变体为空或达到截断上限')
+        imgs = product_gallery(p)
+        if not imgs or any(urlsplit(u).scheme not in ('http', 'https')
+                           or not urlsplit(u).netloc for u in imgs):
+            raise CrawlError('图片 URL 无效')
+        categories = (','.join(product_categories(sample, detail, listings))
+                      if source_adapter(sample.get('source_mapping', {}).get('kind')) else None)
+        product_checks[str(p['id'])] = {
+            'images': imgs, 'images_csv': ','.join(imgs), 'categories': categories,
+        }
         for v in variants:
             key = (str(p['id']), str(v['id']))
             if key in expected:
@@ -411,8 +461,9 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
         raise CrawlError('变体 ID/数量不等于源响应，存在缺失、重复或伪造组合')
     for row in rows:
         p, v, source, sample = expected[(row['Product ID'], row['Variant ID'])]
+        product_check = product_checks[str(p['id'])]
         if source_adapter(sample.get('source_mapping', {}).get('kind')):
-            categories = ','.join(product_categories(sample, detail, listings))
+            categories = product_check['categories']
             if row['Categories'] != categories or row['Tags'] != categories:
                 raise CrawlError('父商品分类归属与列表身份依据不一致')
         if row['Name'] != p['title'] or row['Currency'] != 'USD':
@@ -426,10 +477,7 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
             raise CrawlError('变体链接无效')
         if row['SKU'] != str(v['id']) or row['Parent'] != str(p['id']):
             raise CrawlError('父子标识无效')
-        imgs = product_gallery(p)
-        if not imgs or any(urlsplit(u).scheme not in ('http', 'https') or not urlsplit(u).netloc for u in imgs):
-            raise CrawlError('图片 URL 无效')
-        if row['Images'] != ','.join(imgs):
+        if row['Images'] != product_check['images_csv']:
             raise CrawlError('商品图集缺失或顺序不符')
         if row.get('Variant Image', '') != next(iter(variant_images(p, v)), ''):
             raise CrawlError('变体主图缺少源绑定依据')
@@ -455,9 +503,12 @@ def re_anchor(value):
 def _validate_shopify_import(root, imported, samples):
     manifest_path = root / 'shopify_merge_groups.json'
     if not manifest_path.is_file():
+        rows_by_handle = {}
+        for row in imported:
+            rows_by_handle.setdefault(row['Handle'], []).append(row)
         for sample in samples:
             product = sample['product']
-            group = [row for row in imported if row['Handle'] == product['handle']]
+            group = rows_by_handle.get(product['handle'], [])
             images = [row for row in group if row['Image Src']]
             if ([row['Image Src'] for row in images] != product_gallery(product)
                     or [row['Image Position'] for row in images]
@@ -659,9 +710,16 @@ def validate(root):
         raise CrawlError('只有列表完成，商品采集尚未执行')
     full = scope_path.is_file() and read_json(scope_path).get('detail_scope') == 'all_products'
     result = validate_samples(detail, samples, listings, rows, full=full, root=root)
-    with (root / 'result_clean.csv').open(encoding='utf-8-sig', newline='') as f:
-        cleaned = list(csv.DictReader(f))
-    if cleaned != rows:
+    # result_clean.csv is required to be byte-for-byte the trusted normalized
+    # export. Comparing streaming digests avoids parsing and retaining a second
+    # 500 MB copy for stores with very large variant galleries.
+    def file_digest(path):
+        digest = hashlib.sha256()
+        with Path(path).open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.digest()
+    if file_digest(root / 'result_clean.csv') != file_digest(root / 'result.csv'):
         raise CrawlError('清洗结果与已验证的唯一变体行不一致')
     with (root / 'shopify_import.csv').open(encoding='utf-8-sig', newline='') as f:
         imported = list(csv.DictReader(f))

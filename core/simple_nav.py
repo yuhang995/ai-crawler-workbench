@@ -55,6 +55,38 @@ def legal_url(url, base):
             and not any(word in path for word in ('support', 'warranty', 'faq', 'gift-card', 'gift_card')))
 
 
+def _single_product_store_navigation(html, base):
+    """Return one explicit primary-nav PDP only for a true single-item shop.
+
+    Product recommendations remain forbidden.  This narrow shape applies only
+    when the visible header has no collection/category URL and every useful
+    shop CTA points to the same same-origin product (common for one-product
+    brands).  ``collect_listing`` already has a deterministic direct-product
+    contract for this route.
+    """
+    soup = parse_soup(html, 'lxml')
+    header = soup.find('header')
+    if header is None:
+        return {}
+    if any(legal_url(_category_target(base, a.get('href')), base)
+           for a in header.select('a[href]')):
+        return {}
+    candidates = []
+    for anchor in header.select('nav a[href]'):
+        target = urljoin(base, str(anchor.get('href') or '').strip())
+        parsed = urlsplit(target)
+        label = _label(anchor).strip()
+        if (parsed.hostname == urlsplit(base).hostname
+                and re.fullmatch(r'/products/[^/]+/?', parsed.path, re.I)
+                and re.fullmatch(r'(?:shop|shop all|buy|buy now)', label, re.I)):
+            candidates.append((label, target))
+    urls = list(dict.fromkeys(target for _, target in candidates))
+    if len(urls) != 1:
+        return {}
+    label = next(label for label, target in candidates if target == urls[0])
+    return {label: urls[0]}
+
+
 def _category_target(base, target):
     """Preserve an explicit locale context for root-relative category hrefs."""
     value = str(target or '').strip()
@@ -364,7 +396,9 @@ def _container_role(node):
     tokens = []
     current = node
     while current is not None:
-        tokens.extend([current.name or '', current.get('id', '')])
+        tokens.extend([current.name or '', current.get('id', ''),
+                       current.get('aria-label', ''), current.get('title', ''),
+                       current.get('data-role', '')])
         value = current.get('class', [])
         classes = value if isinstance(value, list) else [value]
         if current.name == 'header':
@@ -817,7 +851,13 @@ def _primary_root_bar(region_data, base):
     noise = {'menu', 'close', 'back', 'search', 'account', 'cart', 'more'}
     primary_candidates = []
     for item in region_data:
+        # Search suggestion and cart/utility navs can repeat a large subset of
+        # the real catalog.  Their high URL overlap must never qualify them as
+        # the visible desktop root bar (Hunter Boots exposes "Popular
+        # Categories" this way).
         node = item['node']
+        if item.get('role') != 'desktop' or _container_role(node) != 'desktop':
+            continue
         roots = []
         list_items = [li for li in node.select('li') if not _desktop_hidden(li, node)]
         if list_items:
@@ -868,7 +908,12 @@ def _primary_root_bar(region_data, base):
                                   if other is not item))
         coverage = (len(candidate_urls & other_urls) / len(candidate_urls)
                     if candidate_urls else 0.0)
-        if len(roots) >= 3 and root_labels and coverage >= OUTLINE_COVERAGE_THRESHOLD:
+        declared_main = ' '.join(str(node.get(name, '')) for name in (
+            'aria-label', 'id', 'class')).casefold()
+        semantic_main = bool(re.search(r'\b(?:main|primary)(?:\s+(?:menu|navigation))?\b',
+                                       declared_main))
+        if (len(roots) >= 3 and root_labels
+                and (coverage >= OUTLINE_COVERAGE_THRESHOLD or semantic_main)):
             primary_candidates.append((len(root_labels), root_labels, node))
     if primary_candidates:
         _, labels, node = max(primary_candidates, key=lambda value: value[0])
@@ -889,6 +934,8 @@ def _sibling_panel_owners(region_data, base):
     result = {}
     for item in region_data:
         node = item['node']
+        if item.get('role') == 'secondary' or _container_role(node) == 'secondary':
+            continue
         if node is root_node:
             continue
         scores = {root: 0 for root in roots}
@@ -1926,11 +1973,23 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
                 root_basis = 'url_coverage_plus_structural_roots'
             output_root_coverage = ((len(validation_roots & output_roots) / len(validation_roots))
                                     if validation_roots else 1.0)
+            valid_output_roots = bool(output_roots) and all(
+                root_name and root_name not in {'menu', 'menu close', 'mobile menu', 'close'}
+                for root_name in output_roots)
+            high_coverage_root_mismatch = bool(
+                validation_roots and output_coverage >= .90 and valid_output_roots
+                and output_root_coverage < OUTLINE_COVERAGE_THRESHOLD)
+            if high_coverage_root_mismatch:
+                warnings.append({'code': 'navigation_high_coverage_root_mismatch',
+                                 'message': '导航 URL 覆盖率已达 90%，一级名称归属差异降级为警告',
+                                 'output_coverage': round(output_coverage, 4),
+                                 'output_root_coverage': round(output_root_coverage, 4)})
             required_root_ratio = (1.0 if root_basis == 'source_outline_intersection'
                                    and len(validation_roots) <= 12 else OUTLINE_COVERAGE_THRESHOLD)
             incomplete_output = (
                 (source_urls and output_coverage < OUTLINE_COVERAGE_THRESHOLD)
-                or (validation_roots and output_root_coverage < required_root_ratio))
+                or (validation_roots and output_root_coverage < required_root_ratio
+                    and not high_coverage_root_mismatch))
             coverage.update({
                 'final_ai_output_ratio': round(output_coverage, 4),
                 'final_ai_root_ratio': round(output_root_coverage, 4),
@@ -1989,6 +2048,23 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
 def run_simple(root, base, html):
     root = Path(root)
     (root / 'evidence').mkdir(parents=True, exist_ok=True)
+    categories = _single_product_store_navigation(html, base)
+    if categories:
+        urls = list(categories.values())
+        save_json(root / 'evidence/simple_nav_sources.json',
+                  {'base_url': base, 'valid_urls': urls,
+                   'source': 'single_product_primary_navigation'})
+        save_json(root / 'navigation_timing.json',
+                  {'mode': 'single_product_primary_navigation', 'cli_seconds': 0,
+                   'llm_invocations': 0})
+        warnings = [{'code': 'single_product_store_navigation',
+                     'message': '主导航唯一商品入口已作为直达商品目录'}]
+        save_json(root / 'warnings.json', warnings)
+        publish_simple(root, categories, warnings,
+                       scope='published_single_product_primary_navigation')
+        return categories, {'method': 'simple_nav',
+                            'source': 'single_product_primary_navigation',
+                            'roots': list(categories)}, [html]
     categories = _hydrogen_navigation(html, base)
     if categories:
         urls = list(dict.fromkeys(categories.values()))

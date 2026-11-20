@@ -4,13 +4,30 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from core.simple_nav import slim_html_for_ai, clean_categories, publish_simple, extract_url_json_with_ai
+from core.simple_nav import (slim_html_for_ai, clean_categories, publish_simple,
+                             extract_url_json_with_ai, run_simple)
 from core.common import Client, CrawlError, read_json
 
 BASE = 'https://example.com/'
 
 
 class SimpleNavTests(unittest.TestCase):
+    def test_single_product_primary_shop_entry_is_deterministic_directory(self):
+        html = '''<header><nav><a href="/products/variety-pack">Shop All</a>
+        <a href="/pages/stores">Find in Store</a></nav></header>
+        <main><a href="/products/featured">Featured card</a></main>'''
+        with tempfile.TemporaryDirectory() as directory:
+            categories, evidence, _ = run_simple(directory, BASE, html)
+            self.assertEqual(categories, {'Shop All': BASE + 'products/variety-pack'})
+            self.assertEqual(evidence['source'], 'single_product_primary_navigation')
+            self.assertTrue(read_json(Path(directory) / 'navigation_report.json')['passed'])
+
+    def test_multiple_product_promos_never_become_directory(self):
+        html = '''<header><nav><a href="/products/a">Shop All</a>
+        <a href="/products/b">Buy Now</a></nav></header>'''
+        data = slim_html_for_ai(html, BASE)
+        self.assertEqual(data['valid_urls'], [])
+
     def test_headless_div_page_keeps_home_cards_and_header_root_triggers(self):
         html = '''<body><div id="app"><header><nav>
         <button>Menu</button><button>Shop By</button><button>Gifts</button>
