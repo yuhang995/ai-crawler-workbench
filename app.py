@@ -20,13 +20,14 @@ validate_proxy = getattr(_common, 'validate_proxy', lambda value: value or None)
 redact_proxy = getattr(_common, 'redact_proxy', lambda value: None)
 redact_sensitive = getattr(_common, 'redact_sensitive', lambda value, proxy=None: str(value))
 from core.pipeline import run_job
+from core.failure_telemetry import submit_failure_async
 
 ROOT = Path(__file__).resolve().parent
 RUNS = ROOT / 'runs'
 JOBS = {}
 LOCK = threading.RLock()
 WORKERS = threading.Semaphore(4)
-APP_VERSION = '1.0.5'
+APP_VERSION = '1.0.6'
 MAX_PARALLEL_JOBS = 4
 MAX_BATCH_SITES = 20
 TERMINAL_STATES = {'completed', 'failed', 'interrupted', 'needs_recheck', 'cancelled'}
@@ -280,6 +281,9 @@ def execute(job):
         except Exception:
             pass  # failure details are already persisted and emitted by the pipeline.
         finally:
+            failure_path = RUNS / job['id'] / 'failure.json'
+            if failure_path.is_file() and job.get('status') == 'failed':
+                submit_failure_async(ROOT, RUNS / job['id'], job, APP_VERSION)
             if job.get('worker_done') is not None:
                 job['worker_done'].set()
 

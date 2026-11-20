@@ -20,6 +20,9 @@ kytebaby/
 /fixed-*.json
 /diagnostic_bundle.md
 /working_proxies.txt
+/telemetry_config.json
+/telemetry_queue/
+/.installation_id
 /discounted_shopify/
 /zip_verify_*/
 /all-failed-sites-*.csv
