@@ -5,7 +5,8 @@ from core.nav_extractor import extract_navigation, is_blacklisted, needs_dynamic
 from core.shopify_fastpath import (ordered_products, money, product_rows, export,
                                    collect_listing, listing_dom,
                                    explicit_colorway_entries,
-                                   merge_explicit_colorways)
+                                   merge_explicit_colorways, category_leaf_label,
+                                   primary_collection)
 from core.validator import validate_navigation, validate_samples
 from core.detector import observe_market, detect
 
@@ -235,6 +236,19 @@ class ProductTests(unittest.TestCase):
    export(samples,detail,d)
    for name in ['result.csv','result_clean.csv','shopify_import.csv']:
     with open(Path(d)/name,encoding='utf-8-sig') as f:self.assertEqual(len(list(csv.DictReader(f))),3)
+   with open(Path(d)/'shopify_import.csv',encoding='utf-8-sig') as f:
+    imported=list(csv.DictReader(f))
+   self.assertEqual([row['Type'] for row in imported], ['Shop', 'Shop', 'Shop'])
+   self.assertEqual([row['Collection'] for row in imported], ['Shop', 'Shop', 'Shop'])
+   with open(Path(d)/'shopify_collection_assignments.csv',encoding='utf-8-sig') as f:
+    assignments=list(csv.DictReader(f))
+   self.assertEqual([(row['Handle'],row['Collection']) for row in assignments],
+                    [('p1','Shop'),('p2','Shop'),('p3','Shop')])
+ def test_shopify_collection_uses_deepest_visible_leaf(self):
+  categories=['Coffee','Coffee,Coffee Organic Coffee',
+              'Coffee,Coffee Organic Coffee,Coffee Organic Coffee Dark Roast']
+  self.assertEqual(category_leaf_label(categories[-1]),'Dark Roast')
+  self.assertEqual(primary_collection(categories),'Dark Roast')
  def test_fragment_scope(self):
   h='<main><section id="a"><a href="/products/p1">A</a></section><section id="b"><a href="/products/p2">B</a></section></main>'
   self.assertEqual(listing_dom(h,BASE+'/collections/a#b')[0],['p2'])

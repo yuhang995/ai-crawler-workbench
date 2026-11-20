@@ -16,7 +16,8 @@ from .navigation_rules import normalize_url
 from .shopify_fastpath import (listing_dom, money, handle, variant_images,
                                product_gallery, embedded_product_handles,
                                explicit_colorway_entries, single_product_colour, variant_external_url,
-                               hydrogen_group_products, merged_options, product_categories)
+                               hydrogen_group_products, merged_options, product_categories,
+                               primary_collection)
 
 
 def _allow_large_csv_fields():
@@ -501,6 +502,8 @@ def re_anchor(value):
 
 
 def _validate_shopify_import(root, imported, samples):
+    detail = read_json(root / 'detail_url.json') if (root / 'detail_url.json').is_file() else {}
+    listings = read_json(root / 'listings.json') if (root / 'listings.json').is_file() else {}
     manifest_path = root / 'shopify_merge_groups.json'
     if not manifest_path.is_file():
         rows_by_handle = {}
@@ -509,6 +512,13 @@ def _validate_shopify_import(root, imported, samples):
         for sample in samples:
             product = sample['product']
             group = rows_by_handle.get(product['handle'], [])
+            categories = product_categories(sample, detail, listings) if detail else []
+            expected_type = ','.join(categories)
+            expected_collection = primary_collection(categories)
+            if expected_collection and (not group
+                    or group[0].get('Type') != expected_type
+                    or group[0].get('Collection') != expected_collection):
+                raise CrawlError('Shopify 父商品分类或主集合归属缺失')
             images = [row for row in group if row['Image Src']]
             if ([row['Image Src'] for row in images] != product_gallery(product)
                     or [row['Image Position'] for row in images]
@@ -578,6 +588,11 @@ def _validate_shopify_import(root, imported, samples):
         rows = [row for row in imported if row['Handle'] == group_handle]
         if not rows or rows[0]['Title'] != group.get('title'):
             raise CrawlError('Shopify 合并商品标题或首行缺失')
+        expected_type = ','.join(group.get('categories', []))
+        expected_collection = primary_collection(group.get('categories', []))
+        if expected_collection and (rows[0].get('Type') != expected_type
+                or rows[0].get('Collection') != expected_collection):
+            raise CrawlError('Shopify 合并商品分类或主集合归属缺失')
         expected_images = list(dict.fromkeys(
             image for product, _, _ in products for image in product_gallery(product)))
         image_rows = [row for row in rows if row['Image Src']]

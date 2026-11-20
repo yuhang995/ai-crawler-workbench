@@ -256,7 +256,8 @@ def prepare_runtime(root):
         'python 3.ShopifyCrawl_sort.py --all：显式启动全部详情。\n'
         'sample_scope.json 说明本次实际采集的分类。未运行分类不宣称已验证。\n'
         'result.csv/result_clean.csv 每行一个真实变体；Stock 空表示未知，不伪造库存。\n'
-        'shopify_import.csv 默认 draft，图片采用真实变体映射。\n', encoding='utf-8')
+        'shopify_import.csv 默认 draft，图片采用真实变体映射；父商品包含 Type 和主 Collection。\n'
+        'shopify_collection_assignments.csv 保存全部已验证集合归属。\n', encoding='utf-8')
     shutil.copyfile(PROJECT / 'docs' / 'artifact_contract.md', Path(root) / 'artifact_contract.md')
 
 

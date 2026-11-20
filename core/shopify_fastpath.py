@@ -1956,6 +1956,46 @@ FIELDS = ['Type', 'SKU', 'Name', 'Description', 'Sale price', 'Regular price', '
           'External URL', 'Product ID', 'Variant ID', 'Currency', 'Source SKU', 'Variant Image']
 
 
+def category_leaf_label(key):
+    """Return the visible leaf label from a cumulative navigation key."""
+    parts = [part.strip() for part in str(key).split(',') if part.strip()]
+    if not parts:
+        return ''
+    leaf = parts[-1]
+    if len(parts) > 1:
+        parent = parts[-2]
+        if leaf.casefold().startswith(parent.casefold() + ' '):
+            leaf = leaf[len(parent):].strip()
+    return leaf or parts[-1]
+
+
+def primary_collection(categories):
+    """Choose a deterministic deepest collection for Shopify's single field."""
+    values = [value for value in categories if category_leaf_label(value)]
+    if not values:
+        return ''
+    key = max(enumerate(values), key=lambda item: (item[1].count(','), -item[0]))[1]
+    return category_leaf_label(key)
+
+
+def write_shopify_collection_assignments(out, groups):
+    """Persist every verified collection membership, including secondary ones."""
+    rows = []
+    for handle_value, categories in groups:
+        seen = set()
+        for key in categories:
+            label = category_leaf_label(key)
+            identity = label.casefold()
+            if not label or identity in seen:
+                continue
+            seen.add(identity)
+            rows.append({'Handle': handle_value, 'Collection': label,
+                         'Navigation Path': str(key)})
+    write_csv(Path(out) / 'shopify_collection_assignments.csv', rows,
+              ['Handle', 'Collection', 'Navigation Path'])
+    return rows
+
+
 def variant_external_url(sample, variant):
     url = sample['url']
     from .custom_site import STOREFRONT_MODULES
@@ -2104,10 +2144,15 @@ def merged_options(options, colour):
 
 
 def _shopify_row(source_row, handle_value, first, group_title, colour,
-                  colour_image=''):
+                  colour_image='', categories=()):
+    collection = primary_collection(categories)
     item = {'Handle': handle_value, 'Title': group_title if first else '',
             'Body (HTML)': source_row['Description'] if first else '',
             'Vendor': source_row['brand'] if first else '',
+            # Preserve the user's established WP -> Shopify contract: the
+            # complete verified category membership is also the product Type.
+            'Type': source_row['Tags'] if first else '',
+            'Collection': collection if first else '',
             'Tags': source_row['Tags'] if first else '',
             'Published': 'FALSE' if first else '',
             'Variant SKU': source_row['SKU'],
@@ -2208,7 +2253,8 @@ def merge_explicit_colorways(client, samples, detail, out,
             for source_row in product_rows(sample, group['categories']):
                 group_rows.append(_shopify_row(source_row, group['handle'], first,
                                                group['title'], colour,
-                                               member.get('color_image', '')))
+                                               member.get('color_image', ''),
+                                               group['categories']))
                 first = False
             gallery.extend(product_gallery(sample['product']))
             manifest_members.append({
@@ -2255,6 +2301,8 @@ def merge_explicit_colorways(client, samples, detail, out,
                                 'evidence': group['evidence'], 'categories': group['categories'],
                                 'members': manifest_members, 'images': gallery})
     write_csv(out / import_name, imported, list(imported[0]))
+    write_shopify_collection_assignments(
+        out, [(group['handle'], group['categories']) for group in groups])
     unique_wp = {}
     for row in merged_wp:
         identity = (row['Parent'], row['Variant ID'])
@@ -2365,8 +2413,12 @@ def export(samples, detail, out):
     listing_path = out / 'listings.json'
     listings = read_json(listing_path) if listing_path.is_file() else {}
     rows = []
+    categories_by_product = {}
     for sample in samples:
         cats = product_categories(sample, detail, listings)
+        if not cats:
+            raise CrawlError('父商品缺少分类归属')
+        categories_by_product[str(sample['product']['id'])] = cats
         rows.extend(product_rows(sample, cats))
     write_csv(out / 'result.csv', rows, FIELDS)
     unique = {}
@@ -2383,8 +2435,12 @@ def export(samples, detail, out):
     for row in cleaned:
         first = row['Product ID'] not in seen
         seen.add(row['Product ID'])
+        categories = categories_by_product.get(row['Product ID'], [])
+        collection = primary_collection(categories)
         item = {'Handle': handles[row['Product ID']], 'Title': row['Name'] if first else '',
                 'Body (HTML)': row['Description'] if first else '', 'Vendor': row['brand'] if first else '',
+                'Type': row['Tags'] if first else '',
+                'Collection': collection if first else '',
                 'Tags': row['Tags'] if first else '', 'Published': 'FALSE' if first else '',
                 'Variant SKU': row['SKU'], 'Variant Price': row['Sale price'] or row['Regular price'],
                 'Variant Compare At Price': row['Regular price'] if row['Sale price'] else '',
@@ -2411,6 +2467,9 @@ def export(samples, detail, out):
     product_order = {s['product']['handle']: i for i, s in enumerate(samples)}
     shopify.sort(key=lambda row: product_order[row['Handle']])
     write_csv(out / 'shopify_import.csv', shopify, list(shopify[0]))
+    write_shopify_collection_assignments(
+        out, [(sample['product']['handle'], categories_by_product[str(sample['product']['id'])])
+              for sample in samples])
     return rows
 
 

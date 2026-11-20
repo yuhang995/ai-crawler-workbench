@@ -15,7 +15,8 @@
 - `evidence/product-<id>.json`: 保存实际商品源响应，支持外层 product 包装，与 samples 中对象逐字段一致。
 - `result.csv`: 每个真实变体一行，列见 `core.shopify_fastpath.FIELDS`；选项仅来自真实变体 option1/2/3，不做笛卡尔积。库存未知留空。
 - `result_clean.csv`: 以 Product ID + Variant ID 稳定去重。
-- `shopify_import.csv`: Shopify 导入列，默认 draft。
+- `shopify_import.csv`: Shopify 导入列，默认 draft；父商品首行的 `Type` 保留完整分类归属，`Collection` 写入确定性的最深层主集合，变体/图片续行留空。
+- `shopify_collection_assignments.csv`: 每个商品全部已验证集合归属；一行一个 `Handle + Collection + Navigation Path`，用于补充 Shopify 单个主 Collection 字段无法表达的多重归属。
 - `result.csv` / `result_clean.csv` 的 `Images` 是完整商品图集，按源顺序去重；`Variant Image` 只依据 variant_ids、image_id 或变体 featured_image 映射，无明确绑定留空。图集不表示每张图片都属于当前变体。Shopify 导入表通过 Image Src + Image Position 保留全图集；多余图片使用无变体字段的独立图片行，不制造新变体。
 
 非 Shopify 适配另存未经修改的原始 JSON/含嵌入 JSON 的 HTML，并在 sample 中增加 `source_mapping`：

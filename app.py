@@ -27,7 +27,7 @@ RUNS = ROOT / 'runs'
 JOBS = {}
 LOCK = threading.RLock()
 WORKERS = threading.Semaphore(4)
-APP_VERSION = '1.0.6'
+APP_VERSION = '1.0.7'
 MAX_PARALLEL_JOBS = 4
 MAX_BATCH_SITES = 20
 TERMINAL_STATES = {'completed', 'failed', 'interrupted', 'needs_recheck', 'cancelled'}
@@ -365,6 +365,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(pieces) == 4 and pieces[:2] == ['api', 'download']:
             job_id, name = pieces[2:]
             allowed = {'crawler.zip', 'url.json', 'detail_url.json', 'result.csv', 'result_clean.csv',
+                       'shopify_collection_assignments.csv',
                        'shopify_import.csv', 'validation.json', 'report.json', 'failure.json', 'ai.log', 'navigation_ai.log',
                        'warnings.json', 'navigation_report.json', 'navigation_release.json', 'visual_audit.json', 'visual_ai.log', 'visual_context.json', 'review.md', 'navigation_diagnostic.json', 'navigation_review_scope.json', 'navigation_decision.json', 'ai_repair.json', 'ai_repair.log', 'navigation_repair.json', 'navigation_native_audit.json'}
             if job_id not in JOBS or name not in allowed:

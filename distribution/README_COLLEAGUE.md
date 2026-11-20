@@ -41,3 +41,5 @@ Generated jobs are stored under `runs/`. Do not share that directory without rev
 Version 1.0 supports up to 20 sites per submission and runs four sites concurrently. Use the **检查更新** button in the workbench. Updates are fast-forward only and never overwrite local code changes. The repository is public, so colleagues do not need a GitHub account to install or update it.
 
 The private team installer may include opt-in failure diagnostics. It uploads only compact, redacted failure metadata; it excludes cookies, proxy passwords, raw pages and product data. Offline reports remain queued locally and retry later. The public GitHub package contains no collector credential and keeps reporting disabled.
+
+Shopify exports preserve the established WP-to-Shopify category contract in `Type` and `Tags`, add a deterministic primary `Collection`, and include `shopify_collection_assignments.csv` for all verified secondary memberships.
