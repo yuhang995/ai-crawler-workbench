@@ -123,6 +123,20 @@ class WorkflowTests(unittest.TestCase):
    p['variants'][0]['price']='999'
    with self.assertRaises(CrawlError):verify_source_mapping(root,s)
 
+ def test_jsonld_single_offer_object_is_a_valid_single_variant(self):
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);(root/'evidence').mkdir()
+   raw={'sku':'SKU-1','name':'One Product','image':'https://cdn.example.com/one.jpg',
+        'offers':{'sku':'SKU-1','price':'19.99','priceCurrency':'USD'}}
+   save_json(root/'evidence/product.json',raw)
+   sample={'url':BASE+'/p/one','product':{
+    'id':'SKU-1','title':'One Product','images':[{'src':raw['image']}],
+    'variants':[{'id':'SKU-1','price':'19.99','currency':'USD'}]},
+    'source_mapping':{'file':'evidence/product.json',
+     'product_fields':{'id':'/sku','title':'/name'},'variants_path':'/offers',
+     'variant_fields':{'id':'/sku','price':'/price'},'image_paths':['/image']}}
+   verify_source_mapping(root,sample)
+
 if __name__=='__main__':unittest.main()
 
 class AINavigationWorkflowTests(unittest.TestCase):

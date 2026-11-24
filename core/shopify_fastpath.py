@@ -8,7 +8,7 @@ import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from .html_parser import normalize_event_attributes
-from urllib.parse import urlsplit, urljoin, unquote, parse_qs, quote
+from urllib.parse import urlsplit, urljoin, unquote, parse_qs, parse_qsl, quote
 from .html_parser import parse_soup as BeautifulSoup
 from .common import CrawlError, AdapterRequired, query, save_json, read_json
 
@@ -86,9 +86,42 @@ def handle(url):
     return value
 
 
+def product_handle(product, url=''):
+    """Return a stable import handle for Shopify and non-Shopify products."""
+    existing = str(product.get('handle') or '').strip() if isinstance(product, dict) else ''
+    if existing:
+        return existing
+    identity_url = str((product or {}).get('url') or url)
+    candidate = handle(identity_url)
+    if not candidate:
+        candidate = unquote(urlsplit(identity_url).path.rstrip('/').rsplit('/', 1)[-1]).strip()
+    if not candidate:
+        candidate = str((product or {}).get('id') or '').strip()
+    candidate = re.sub(r'-+', '-', re.sub(r'[^A-Za-z0-9_-]+', '-', candidate)).strip('-_')
+    if not candidate:
+        raise CrawlError('商品缺少可导出的 handle、URL slug 和 id')
+    return candidate
+
+
+def _membership_url(url):
+    """Canonical product membership URL without non-identity query noise."""
+    parsed = urlsplit(str(url or ''))
+    path = re.sub(r'/+', '/', unquote(parsed.path)).rstrip('/') or '/'
+    tracking = {'ref', 'source', 'campaign', 'fbclid', 'gclid', 'msclkid',
+                '_gl', 'mc_cid', 'mc_eid'}
+    identity_query = tuple(sorted(
+        (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.casefold().startswith('utm_') and key.casefold() not in tracking))
+    return parsed.scheme.casefold(), parsed.netloc.casefold(), path, identity_query
+
+
 def product_url(collection, slug):
     p = urlsplit(collection)
-    prefix = p.path.split('/collections/')[0]
+    if '/collections/' in p.path:
+        prefix = p.path.split('/collections/')[0]
+    else:
+        locale = re.match(r'^(/(?:[a-z]{2}(?:-[a-z]{2})?))/pages/', p.path, re.I)
+        prefix = locale.group(1) if locale else ''
     return p._replace(path=prefix + '/products/' + slug, query='', fragment='').geturl()
 
 
@@ -245,7 +278,7 @@ def _normalize_hydrogen_product(source, expected_handle=''):
     options = []
     for position, option in enumerate(option_nodes[:3], 1):
         if not isinstance(option, dict) or not option.get('name'):
-            raise CrawlError('Hydrogen 商品选项结构无效')
+            raise AdapterRequired('Hydrogen 商品选项结构不兼容')
         values = [str(item.get('name')) for item in option.get('optionValues', [])
                   if isinstance(item, dict) and item.get('name') is not None]
         options.append({'id': position, 'name': str(option['name']),
@@ -266,13 +299,13 @@ def _normalize_hydrogen_product(source, expected_handle=''):
     currencies = set()
     for node in (source.get('variants') or {}).get('nodes', []):
         if not isinstance(node, dict):
-            raise CrawlError('Hydrogen 变体结构无效')
+            raise AdapterRequired('Hydrogen 变体结构不兼容')
         selected = node.get('selectedOptions') or []
         selected_by_name = {str(item.get('name')): str(item.get('value'))
                             for item in selected if isinstance(item, dict)
                             and item.get('name') is not None and item.get('value') is not None}
         if len(selected_by_name) != len(options):
-            raise CrawlError('Hydrogen 变体选项数量与商品定义不一致')
+            raise AdapterRequired('Hydrogen 变体选项数量与商品定义不兼容')
         price = node.get('price') or {}
         compare = node.get('compareAtPrice') or {}
         currencies.add(str(price.get('currencyCode') or '').upper())
@@ -311,8 +344,13 @@ def _normalize_hydrogen_product(source, expected_handle=''):
             if variant['id'] not in existing['variant_ids']:
                 existing['variant_ids'].append(variant['id'])
         variants.append(variant)
-    if not variants or len(variants) >= 250 or currencies != {'USD'}:
-        raise CrawlError('Hydrogen 商品变体为空、截断或不是 USD')
+    if currencies and currencies != {'USD'}:
+        # A proven foreign currency is a market conflict, not a parser drift.
+        raise CrawlError('Hydrogen 商品明确不是 USD')
+    if not variants or len(variants) >= 250:
+        raise AdapterRequired('Hydrogen 商品变体为空或可能截断，转交站点适配器')
+    if currencies != {'USD'}:
+        raise AdapterRequired('Hydrogen 商品变体缺少可验证 USD 币种')
     return {'id': product_id, 'title': str(source.get('title') or ''),
             'handle': str(source['handle']), 'vendor': str(source.get('vendor') or ''),
             'product_type': str(source.get('productType') or ''),
@@ -1479,14 +1517,27 @@ def curated_card_handles(html, url):
     return handles
 
 
-def resolve_landing_membership(client, html, url):
+def observed_landing_card_handles(html, url):
+    """Finite product-grid handles on a verified catalog landing."""
+    try:
+        slugs, nxt, dynamic = listing_dom(html, url)
+    except AdapterRequired:
+        return set()
+    if len(slugs) < 3 or len(slugs) > 100 or nxt or dynamic:
+        return set()
+    return set(slugs)
+
+
+def resolve_landing_membership(client, html, url, allow_observed_grid=False):
     try:
         products, sources = landing_membership(client, html, url)
         return products, sources, []
     except AdapterRequired:
         slugs, nxt, dynamic = listing_dom(html, url)
+        declared = (observed_landing_card_handles(html, url) if allow_observed_grid
+                    else curated_card_handles(html, url))
         if (not slugs or len(slugs) > 100 or nxt or dynamic
-                or set(slugs) != curated_card_handles(html, url)):
+                or set(slugs) != declared):
             raise AdapterRequired('落地页既无完整子集合来源，也无完整、有限的显式商品卡片')
         products, cards = [], []
         for slug in slugs:
@@ -1536,7 +1587,15 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False,
     collection_tail = (parts.path.split('/collections/', 1)[1].strip('/').split('/')
                        if is_collection_path else [])
     tag_scoped = len(collection_tail) > 1
-    query_scoped = any(key != 'page' for key in parse_qs(parts.query))
+    # Analytics/attribution parameters do not alter collection membership.
+    # Treat only semantic query keys as scoped; otherwise a harmless campaign
+    # token can force Playwright and defeat the verified Feed fallback.
+    query_keys = parse_qs(parts.query)
+    tracking_key = re.compile(
+        r'^(?:utm_.+|gclid|dclid|fbclid|msclkid|ttclid|twclid|ref|source|'
+        r'campaign|campaignid|affiliate|affid|irclickid|abralink)$', re.I)
+    query_scoped = any(key != 'page' and not tracking_key.fullmatch(key)
+                       for key in query_keys)
     feed_only_allowed = bool(prefer_feed_order and not tag_scoped and not query_scoped)
     early_warnings = []
     try:
@@ -1556,6 +1615,27 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False,
     # inspect the rendered/embedded Hydrogen payload before collection logic.
     if not is_collection_path:
         hydrogen = hydrogen_collection_listing(client, url, response.text, full=full)
+        if hydrogen is None and re.fullmatch(r'/pages/[^/]+/?', parts.path, re.I):
+            products, membership_sources, card_sources = resolve_landing_membership(
+                client, response.text, url, allow_observed_grid=True)
+            by_handle = {product['handle']: product for product in products}
+            slugs = listing_dom(response.text, url)[0]
+            ordered = [by_handle[slug] for slug in slugs if slug in by_handle]
+            if len(ordered) < 3:
+                raise AdapterRequired('Shopify 商品落地页不足三个可验证商品')
+            result = {'format': 'shopify_landing_grid', 'url': url,
+                      'products': ordered, 'urls': [product_url(url, p['handle']) for p in ordered],
+                      'warnings': early_warnings, 'order_evidence': 'html_dom',
+                      'feed_page_size': 0, 'membership_sources': membership_sources,
+                      'card_sources': card_sources, 'card_source_kind': 'observed_grid',
+                      'pages': [{'url': url, 'handles': slugs,
+                                 'excluded_not_in_collection': [], 'html': response.text}],
+                      'feeds': [{'products': []}], 'complete': full,
+                      'first3_seconds': round(time.perf_counter() - start, 4),
+                      'first3_cpu_seconds': 0.0}
+            if out:
+                save_json(Path(out) / 'listing.json', result)
+            return result
         if hydrogen is None:
             raise AdapterRequired('Shopify Hydrogen 顶级分类路由缺少可验证商品数据')
         if early_warnings:
@@ -1608,7 +1688,7 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False,
     # Any non-pagination query can alter the visible subset/order.  A public
     # collection feed does not prove those custom parameters, so it can never
     # be the sole order/range evidence for such URLs.
-    scoped=tag_scoped or any(key != 'page' for key in query_values)
+    scoped=tag_scoped or query_scoped
     static_handles=[]
     feed_fallback=False
     initial_dynamic = False
@@ -1627,16 +1707,30 @@ def collect_listing(client, url, out=None, full=True, prefer_feed_order=False,
             'message': '全量采集使用已验证 products.json 成员与顺序，避免逐分类重复渲染前端网格',
             'url': url, 'reason': 'full_store_feed_order'})
         feed_fallback = True
+    elif products and not scoped and not initial_slugs and not static_handles:
+        # An unfiltered Shopify collection feed is authoritative membership.
+        # If the corresponding HTML is a client-rendered shell with no
+        # observable product links, launching Playwright cannot strengthen the
+        # source identity and used to turn a healthy feed into a 300-second AI
+        # repair.  Preserve the feed's published order explicitly instead.
+        if not isinstance(rendered, RenderedPages):
+            rendered = RenderedPages()
+        rendered.warnings.append({'code': 'spa_feed_order_fallback',
+            'message': 'SPA 分类 HTML 未包含商品链接；使用已验证 products.json 成员与顺序',
+            'url': url, 'reason': 'static_spa_grid_empty'})
+        feed_fallback = True
     elif scoped or (products and not initial_slugs and not static_handles):
         from playwright.sync_api import TimeoutError as BrowserTimeout, Error as BrowserError
         try:
             rendered = rendered_listing_pages(url, full)
         except BrowserTimeout as error:
+            # products.json is authoritative membership/order for an
+            # unfiltered collection in both sample and full-store runs.
             if len(products) < 3 or (scoped and not prefer_feed_order):
                 raise
             rendered=RenderedPages()
             rendered.warnings.append({'code':'listing_order_feed_fallback',
-                'message':'Playwright 商品网格超时；全量模式使用已验证 Shopify Feed 继续',
+                'message':'Playwright 商品网格超时；使用已验证 Shopify Feed 顺序继续',
                 'url':url,'reason':str(error)})
             feed_fallback=True
         except (BrowserError,AdapterRequired) as error:
@@ -2393,7 +2487,7 @@ def write_wp_parent_products(out, manifest_name='shopify_merge_groups.json',
 
 def product_categories(sample, detail, listings=None):
     from .custom_site import STOREFRONT_MODULES
-    urls = {sample['url']}
+    urls = {_membership_url(sample['url'])}
     kind = sample.get('source_mapping', {}).get('kind')
     if kind in STOREFRONT_MODULES:
         for key, listing in (listings or {}).items():
@@ -2403,8 +2497,9 @@ def product_categories(sample, detail, listings=None):
                         and source.get('source_mapping', {}).get('file')
                         and source.get('source_mapping', {}).get('kind') == kind
                         and str(source['product']['id']) == str(sample['product']['id'])):
-                    urls.add(url)
-    return [key for key, links in detail.items() if urls.intersection(links)]
+                    urls.add(_membership_url(url))
+    return [key for key, links in detail.items()
+            if urls.intersection(_membership_url(url) for url in links)]
 
 
 def export(samples, detail, out):
@@ -2430,7 +2525,8 @@ def export(samples, detail, out):
     cleaned = list(unique.values())
     write_csv(out / 'result_clean.csv', cleaned, FIELDS)
     shopify = []
-    handles = {str(s['product']['id']): s['product']['handle'] for s in samples}
+    handles = {str(s['product']['id']): product_handle(s['product'], s.get('url', ''))
+               for s in samples}
     seen = set()
     for row in cleaned:
         first = row['Product ID'] not in seen
@@ -2453,7 +2549,7 @@ def export(samples, detail, out):
     if not shopify:
         raise CrawlError('没有可导出的真实变体')
     for sample in samples:
-        slug = sample['product']['handle']
+        slug = product_handle(sample['product'], sample.get('url', ''))
         slots = [r for r in shopify if r['Handle'] == slug]
         for index, src in enumerate(product_gallery(sample['product'])):
             if index < len(slots):
@@ -2464,11 +2560,13 @@ def export(samples, detail, out):
                 shopify.append(target)
             target['Image Src'] = src
             target['Image Position'] = str(index + 1)
-    product_order = {s['product']['handle']: i for i, s in enumerate(samples)}
+    product_order = {product_handle(s['product'], s.get('url', '')): i
+                     for i, s in enumerate(samples)}
     shopify.sort(key=lambda row: product_order[row['Handle']])
     write_csv(out / 'shopify_import.csv', shopify, list(shopify[0]))
     write_shopify_collection_assignments(
-        out, [(sample['product']['handle'], categories_by_product[str(sample['product']['id'])])
+        out, [(product_handle(sample['product'], sample.get('url', '')),
+               categories_by_product[str(sample['product']['id'])])
               for sample in samples])
     return rows
 

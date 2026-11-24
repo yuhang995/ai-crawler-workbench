@@ -8,8 +8,13 @@ import os
 import random
 import re
 import socket
+import socketserver
+import select
 import threading
 import time
+import certifi
+import socks
+from contextlib import contextmanager
 from collections import OrderedDict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -39,6 +44,28 @@ class AccessChallenge(CrawlError):
 
 class TaskCancelled(CrawlError):
     """A workbench operator requested a cooperative task stop."""
+
+
+class _BrowserHTTPResponse:
+    """Small requests-compatible response backed by a Playwright navigation."""
+
+    def __init__(self, url, status, headers, content):
+        self.url = url
+        self.status_code = int(status or 0)
+        self.headers = dict(headers or {})
+        self.content = bytes(content or b'')
+        encoding = 'utf-8'
+        match = re.search(r'charset=([^;\s]+)', self.headers.get('content-type', ''), re.I)
+        if match:
+            encoding = match.group(1).strip('"\'')
+        self.text = self.content.decode(encoding, errors='replace')
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.RequestsError(f'HTTP Error {self.status_code}')
+
+    def json(self):
+        return json.loads(self.text)
 
 
 def load_proxy_pool(path=None):
@@ -113,6 +140,82 @@ def playwright_proxy(value):
     if parsed.password is not None:
         result['password'] = unquote(parsed.password)
     return result
+
+
+class _SocksConnectRelay(socketserver.BaseRequestHandler):
+    """Minimal local CONNECT relay for Playwright -> authenticated SOCKS5."""
+
+    def handle(self):
+        self.request.settimeout(15)
+        data = b''
+        while b'\r\n\r\n' not in data and len(data) < 16384:
+            chunk = self.request.recv(4096)
+            if not chunk:
+                return
+            data += chunk
+        first = data.split(b'\r\n', 1)[0].decode('latin1', errors='replace')
+        match = re.match(r'^CONNECT\s+([^:\s]+|\[[^]]+\]):(\d+)\s+HTTP/', first, re.I)
+        if not match:
+            self.request.sendall(b'HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n')
+            return
+        host = match.group(1).strip('[]')
+        port = int(match.group(2))
+        upstream = self.server.upstream
+        remote = socks.socksocket()
+        remote.set_proxy(socks.SOCKS5, upstream.hostname, upstream.port,
+                         username=unquote(upstream.username) if upstream.username else None,
+                         password=unquote(upstream.password) if upstream.password else None)
+        remote.settimeout(20)
+        try:
+            remote.connect((host, port))
+            self.request.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+            self.request.settimeout(None)
+            remote.settimeout(None)
+            sockets = (self.request, remote)
+            while True:
+                ready, _, _ = select.select(sockets, (), (), 30)
+                if not ready:
+                    continue
+                for source in ready:
+                    payload = source.recv(65536)
+                    if not payload:
+                        return
+                    (remote if source is self.request else self.request).sendall(payload)
+        except (OSError, socks.ProxyError):
+            try:
+                self.request.sendall(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
+            except OSError:
+                pass
+        finally:
+            remote.close()
+
+
+class _ThreadedSocksRelay(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+@contextmanager
+def playwright_proxy_context(value):
+    """Yield a Playwright proxy, adapting authenticated SOCKS5 via localhost."""
+    if not value:
+        yield None
+        return
+    parsed = urlsplit(value)
+    if parsed.scheme.casefold() != 'socks5' or parsed.username is None:
+        yield playwright_proxy(value)
+        return
+    relay = _ThreadedSocksRelay(('127.0.0.1', 0), _SocksConnectRelay)
+    relay.upstream = parsed
+    thread = threading.Thread(target=relay.serve_forever,
+                              name='playwright-socks-relay', daemon=True)
+    thread.start()
+    try:
+        yield {'server': f'http://127.0.0.1:{relay.server_address[1]}'}
+    finally:
+        relay.shutdown()
+        relay.server_close()
+        thread.join(timeout=2)
 
 
 _CHALLENGE_TEXT = re.compile(
@@ -321,9 +424,14 @@ class Client:
     def _ensure_pool_proxy(self, hostname):
         if self.proxy or not self.proxy_pool:
             return
+        # A Client belongs to one workbench task.  Allocate from one global
+        # task cursor rather than a per-host cursor: a four-site batch uses
+        # four different exits instead of every distinct hostname receiving
+        # proxy zero.  Once allocated, the task keeps that proxy until an
+        # explicit transport/rate-limit rotation below.
         with self._proxy_pool_guard:
-            index = self._proxy_pool_cursor.get(hostname, 0)
-            self._proxy_pool_cursor[hostname] = index + 1
+            index = self._proxy_pool_cursor.get('__task__', 0)
+            self._proxy_pool_cursor['__task__'] = index + 1
         self.proxy_pool_index = index % len(self.proxy_pool)
         self.proxy = self.proxy_pool[self.proxy_pool_index]
 
@@ -343,7 +451,10 @@ class Client:
     def _new_session(self, hostname=None):
         fingerprints = ('firefox', 'chrome', 'safari15_5')
         index = self.fingerprint_indexes.get(hostname, 0) if hostname else 0
-        options = {'impersonate': fingerprints[index % len(fingerprints)]}
+        # curl_cffi otherwise inherits a machine-dependent CA location.  Pin
+        # normal verification to certifi; never disable TLS verification.
+        options = {'impersonate': fingerprints[index % len(fingerprints)],
+                   'verify': certifi.where()}
         if self.proxy:
             options['proxy'] = self.proxy
         session = requests.Session(**options)
@@ -482,7 +593,7 @@ class Client:
                                          Error as BrowserError)
         parsed = urlsplit(public_url(url))
         hostname = parsed.hostname.casefold()
-        with self.domain_lock(hostname):
+        with self.domain_lock(hostname), playwright_proxy_context(self.proxy) as browser_proxy:
             # The recovery budget is already bounded to once per individual
             # Client.get() call by its local ``recovered`` flag.  Do not burn a
             # permanent domain-wide token after a successful warm-up: long
@@ -497,8 +608,8 @@ class Client:
                     except Exception:
                         browser = pw.chromium.launch(headless=True)
                     context_options = {'locale': 'en-US', 'timezone_id': 'America/New_York'}
-                    if self.proxy:
-                        context_options['proxy'] = playwright_proxy(self.proxy)
+                    if browser_proxy:
+                        context_options['proxy'] = browser_proxy
                     context = browser.new_context(**context_options)
                     context.add_cookies([{'name': 'localization', 'value': 'US', 'url': url},
                                          {'name': 'cart_currency', 'value': 'USD', 'url': url}])
@@ -536,6 +647,66 @@ class Client:
                 finally:
                     if browser:
                         browser.close()
+
+    @staticmethod
+    def _is_missing_issuer_error(error):
+        text = str(error).casefold()
+        return ('curl: (60)' in text or 'curl (60)' in text) and (
+            'unable to get local issuer certificate' in text
+            or 'ssl certificate problem' in text)
+
+    def _browser_get_for_tls(self, url, headers=None):
+        """Fetch one public resource in Chromium after a curl CA-chain error.
+
+        Browsers can recover a site whose server omits an intermediate
+        certificate using their platform/intermediate cache.  This is a
+        bounded same-origin fallback and deliberately does not use
+        ``ignore_https_errors`` or ``verify=False``.
+        """
+        from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+        parsed = urlsplit(public_url(url))
+        hostname = parsed.hostname.casefold()
+        with (self.domain_lock(hostname),
+              playwright_proxy_context(self.proxy) as browser_proxy,
+              sync_playwright() as pw):
+            browser = None
+            try:
+                try:
+                    browser = pw.chromium.launch(channel='chrome', headless=True)
+                except Exception:
+                    browser = pw.chromium.launch(headless=True)
+                options = {'locale': 'en-US', 'timezone_id': 'America/New_York'}
+                if browser_proxy:
+                    options['proxy'] = browser_proxy
+                safe_headers = {str(k): str(v) for k, v in (headers or {}).items()
+                                if str(k).casefold() not in {'host', 'cookie', 'authorization'}}
+                if safe_headers:
+                    options['extra_http_headers'] = safe_headers
+                context = browser.new_context(**options)
+                context.add_cookies([{'name': 'localization', 'value': 'US', 'url': url},
+                                     {'name': 'cart_currency', 'value': 'USD', 'url': url}])
+                page = context.new_page()
+                try:
+                    response = page.goto(url, wait_until='commit', timeout=15000)
+                except BrowserTimeout as error:
+                    raise CrawlError('TLS 证书链回退浏览器打开页面超时') from error
+                if not response:
+                    raise CrawlError('TLS 证书链回退浏览器未取得响应')
+                actual = page.url
+                if urlsplit(actual).hostname.casefold() != hostname:
+                    raise CrawlError('TLS 证书链回退跳转到不同站点')
+                content = response.body()
+                recovered = _BrowserHTTPResponse(actual, response.status,
+                                                 response.headers, content)
+                if is_access_challenge_response(recovered):
+                    raise AccessChallenge('站点返回人机验证挑战，TLS 浏览器回退未绕过', actual)
+                recovered.raise_for_status()
+                self._store_browser_state(hostname, context.cookies(),
+                                          page.evaluate('navigator.userAgent'))
+                return recovered
+            finally:
+                if browser:
+                    browser.close()
 
     def get(self, url, attempts=3, timeout=None, headers=None):
         self._check_cancelled()
@@ -644,6 +815,13 @@ class Client:
                 except AccessChallenge:
                     raise
                 except requests.RequestsError as e:
+                    if self._is_missing_issuer_error(e):
+                        # The curl session already uses certifi.  A remaining
+                        # issuer error normally means the origin omitted an
+                        # intermediate certificate; use one bounded browser
+                        # fetch rather than weakening TLS verification.
+                        r = self._browser_get_for_tls(target, request_options.get('headers'))
+                        break
                     if attempt + 1 == attempts:
                         raise CrawlError(f'请求失败 {target}: {redact_sensitive(e, self.proxy)}') from e
                     # Immediate retries tend to hit the same transient reset;
@@ -656,7 +834,13 @@ class Client:
                     time.sleep(0.5 * (attempt + 1))
             if r.status_code in (301, 302, 303, 307, 308):
                 from urllib.parse import urljoin
-                target = public_url(urljoin(target, r.headers['Location']))
+                location = r.headers.get('Location')
+                if not location:
+                    # A few CDNs emit a terminal 3xx without a Location header.
+                    # Return that exact response to the caller for diagnosis;
+                    # do not index the header and do not invent a destination.
+                    break
+                target = public_url(urljoin(target, location))
                 continue
             break
         else:
@@ -684,6 +868,33 @@ class Client:
         with self.lock:
             self.cache.clear()
             self.cache_bytes = 0
+
+    def close(self):
+        """Release cached bodies and native curl handles owned by this job."""
+        self.clear_cache()
+        sessions = getattr(self.local, 'sessions', None)
+        if isinstance(sessions, dict):
+            for session in list(sessions.values()):
+                close = getattr(session, 'close', None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            sessions.clear()
+        session = getattr(self.local, 'session', None)
+        if session is not None and not isinstance(sessions, dict):
+            close = getattr(session, 'close', None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        self.local.__dict__.clear()
+        self.browser_cookies.clear()
+        self.browser_user_agents.clear()
+        self.browser_attempted.clear()
+        self.recovery_attempted_domains.clear()
 
     def json(self, url, headers=None, timeout=None, attempts=3):
         """Return a public JSON response with the same bounded transport options.
@@ -726,12 +937,12 @@ class Client:
     def browser_json(self, url):
         from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout, Error as BrowserError
         parsed = urlsplit(url)
-        with sync_playwright() as pw:
+        with playwright_proxy_context(self.proxy) as browser_proxy, sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             try:
                 context_options = {'locale': 'en-US'}
-                if self.proxy:
-                    context_options['proxy'] = playwright_proxy(self.proxy)
+                if browser_proxy:
+                    context_options['proxy'] = browser_proxy
                 context = browser.new_context(**context_options)
                 context.add_cookies([{'name': 'localization', 'value': 'US', 'url': url},
                                     {'name': 'cart_currency', 'value': 'USD', 'url': url}])
@@ -884,7 +1095,9 @@ class Client:
         from playwright.sync_api import sync_playwright
         parsed = urlsplit(public_url(url))
         hostname = parsed.hostname.casefold()
-        with self.domain_lock(hostname), sync_playwright() as pw:
+        with (self.domain_lock(hostname),
+              playwright_proxy_context(self.proxy) as browser_proxy,
+              sync_playwright() as pw):
             browser = None
             try:
                 try:
@@ -892,8 +1105,8 @@ class Client:
                 except Exception:
                     browser = pw.chromium.launch(headless=False)
                 options = {'locale': 'en-US', 'timezone_id': 'America/New_York'}
-                if self.proxy:
-                    options['proxy'] = playwright_proxy(self.proxy)
+                if browser_proxy:
+                    options['proxy'] = browser_proxy
                 context = browser.new_context(**options)
                 page = context.new_page()
                 page.goto(url, wait_until='commit', timeout=20000)

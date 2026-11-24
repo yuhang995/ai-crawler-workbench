@@ -3,13 +3,80 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core.common import CrawlError, read_json, save_json
-from core.custom_site import (_distinct_samples, demandware_navigation,
-                              identify_platform, run_custom_sample)
+from core.common import AdapterRequired, CrawlError, read_json, save_json
+from core.custom_site import (_distinct_samples, demandware_listing,
+                              demandware_navigation, demandware_product, identify_platform,
+                              run_custom_sample)
 from core.validator import verify_source_mapping
 
 
 class CustomSiteTests(unittest.TestCase):
+    def test_demandware_non_json_variation_is_structural_adapter_failure(self):
+        endpoint = ('https://example.com/on/demandware.store/Sites-test-Site/en_US/'
+                    'Product-Variation?pid=master')
+        client = Mock()
+        client.get.return_value = Mock(
+            url='https://example.com/product.html',
+            text='<a href="' + endpoint + '">variant</a>')
+        client.json.side_effect = CrawlError('接口未返回 JSON: ' + endpoint)
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(AdapterRequired):
+            demandware_product(client, 'https://example.com/product.html',
+                               Path(directory))
+
+    def test_demandware_variation_http_500_requests_adapter_repair(self):
+        endpoint = ('https://example.com/on/demandware.store/Sites-test-Site/en_US/'
+                    'Product-Variation?pid=master')
+        client = Mock()
+        client.get.return_value = Mock(url='https://example.com/product.html',
+                                      text='<a href="' + endpoint + '">variant</a>')
+        client.json.side_effect = CrawlError('请求失败 ' + endpoint + ': HTTP Error 500:')
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(AdapterRequired):
+            demandware_product(client, 'https://example.com/product.html', Path(directory))
+
+    def test_demandware_listing_accepts_alphanumeric_sitegenesis_tile_ids(self):
+        html = '''<main><div class="product-tile" data-itemid="61331M">
+          <a class="thumb-link" href="/en/endorphin-speed-6/61331M.html?dwvar_color=red"></a>
+          <a class="small-product-image" href="/en/endorphin-speed-6/61331M.html?dwvar_color=blue"></a>
+          <a class="name-link" href="/en/endorphin-speed-6/61331M.html?dwvar_color=red">Speed 6</a>
+        </div><div class="product-tile" data-itemid="60803M">
+          <a class="thumb-link" href="/en/endorphin-pro-5/60803M.html"></a>
+        </div><div class="product-tile" data-itemid="60823M">
+          <a class="thumb-link" href="/en/ride-19/60823M.html"></a>
+        </div></main>'''
+        client = Mock()
+        client.get.return_value = Mock(url='https://example.com/en/mens-running/', text=html)
+        listing = demandware_listing(client, 'https://example.com/en/mens-running/')
+        self.assertEqual(len(listing['urls']), 3)
+        self.assertIn('/61331M.html?dwvar_color=red', listing['urls'][0])
+
+    def test_demandware_listing_uses_page_declared_site_and_locale(self):
+        category = 'https://example.com/en/men/'
+        home = '''<script>
+          CQuotient.locale = 'default';
+          var cq_params = {categoryId: 'ignored'};
+          cq_params.categoryId = 'mens-best-sellers';
+        </script>
+        <script src="/on/demandware.static/Sites-saucony_us-Site/-/default/app.js"></script>'''
+        cards = ''.join(
+            f'<a class="b-product_tile-link" data-pid="p{i}" '
+            f'href="/en/shoe-{i}/{1000+i}.html">P{i}</a>' for i in range(3))
+
+        def get(url, **kwargs):
+            response = Mock()
+            response.url = url
+            response.text = cards if 'Search-UpdateGrid' in url else home
+            return response
+
+        client = Mock()
+        client.get.side_effect = get
+        listing = demandware_listing(client, category)
+        requested = [call.args[0] for call in client.get.call_args_list]
+        self.assertIn(
+            'https://example.com/on/demandware.store/'
+            'Sites-saucony_us-Site/default/Search-UpdateGrid'
+            '?cgid=mens-best-sellers&start=0&sz=24&ajax=true', requested)
+        self.assertEqual(len(listing['urls']), 3)
+
     def test_full_detail_retries_transient_tls_without_hiding_data_errors(self):
         url = 'https://example.com/product.html'
         sample = {'url': url, 'product': {'id': 'p1'}}

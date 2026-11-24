@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import app
-from core.common import (Client, playwright_proxy, redact_proxy,
+from core.common import (Client, playwright_proxy, playwright_proxy_context, redact_proxy,
                          redact_sensitive, validate_proxy)
 
 
@@ -28,11 +28,21 @@ class ProxyAndAccessConfirmTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 validate_proxy(invalid)
 
+    def test_authenticated_socks_proxy_uses_password_free_local_browser_relay(self):
+        secret = 'socks5://alice:secret@127.0.0.1:9999'
+        with playwright_proxy_context(secret) as mapped:
+            self.assertRegex(mapped['server'], r'^http://127\.0\.0\.1:\d+$')
+            self.assertNotIn('username', mapped)
+            self.assertNotIn('password', mapped)
+            self.assertNotIn('secret', mapped['server'])
+
     def test_curl_session_receives_the_explicit_proxy(self):
         session = MagicMock()
         with patch('core.common.requests.Session', return_value=session) as factory:
             Client(proxy=PROXY)._new_session('store.example')
-        factory.assert_called_once_with(impersonate='firefox', proxy=PROXY)
+        self.assertEqual(factory.call_args.kwargs['impersonate'], 'firefox')
+        self.assertEqual(factory.call_args.kwargs['proxy'], PROXY)
+        self.assertTrue(factory.call_args.kwargs['verify'].endswith('cacert.pem'))
 
     def test_domain_browser_state_round_trips_without_proxy_password(self):
         cookies = [{'name': 'clearance', 'value': 'ok', 'domain': '.store.example',

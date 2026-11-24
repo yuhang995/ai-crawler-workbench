@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
-from .common import CrawlError, canonical, query, read_json, save_json
+from .common import AdapterRequired, CrawlError, canonical, query, read_json, save_json
 from .html_parser import parse_soup
 
 KIND = 'woocommerce_storefront'
@@ -29,7 +29,7 @@ def navigation(html, base, client=None, evidence_dir=None):
     soup = parse_soup(html, 'lxml')
     header = soup.find('header')
     if header is None:
-        raise CrawlError('WooCommerce 首页缺少可见导航')
+        raise AdapterRequired('WooCommerce 首页缺少确定性商品分类导航，回退 simple_nav')
     result = {}
     for anchor in header.select('a[href*="/product-category/"]'):
         target = urljoin(base, anchor.get('href'))
@@ -50,7 +50,7 @@ def navigation(html, base, client=None, evidence_dir=None):
             owners = owners[:2] + [owners[-1]]
         result.setdefault(_key(owners), target)
     if not result:
-        raise CrawlError('WooCommerce 导航没有商品分类')
+        raise AdapterRequired('WooCommerce 导航没有 /product-category/ 分类，回退 simple_nav')
     if evidence_dir:
         save_json(Path(evidence_dir) / 'woocommerce-navigation.json', result)
     return result
@@ -141,14 +141,58 @@ def fetch_product(client, url, evidence):
     fingerprint = hashlib.sha256(endpoint.encode()).hexdigest()[:16]
     source_name = f'woocommerce-product-{fingerprint}.json'
     market_url = urljoin(url, '/wp-json/wc/store/v1/cart')
-    market = client.json(market_url)
+    market = None
+    try:
+        candidate = client.json(market_url)
+        if isinstance(candidate, dict):
+            market = candidate
+    except CrawlError:
+        pass
+    market = market or {}
+    cart_country = (market.get('shipping_address') or {}).get('country')
+    cart_currency = (market.get('totals') or {}).get('currency_code')
+    market_mode = 'cart'
+    market_html_name = None
+    if cart_country != 'US' or cart_currency != 'USD':
+        # The Store API product response is already the price authority.  A
+        # blocked/empty cart may be replaced only by its USD currency plus an
+        # independently visible US storefront signal from the real PDP.
+        page = client.get(url, timeout=30)
+        country = _page_country(page.text)
+        if product.get('currency') != 'USD' or country != 'US':
+            raise CrawlError('WooCommerce 商品源与页面均未证明 US/USD')
+        market_mode = 'product_store_api_and_page'
+        market_html_name = ('woocommerce-market-page-'
+                            + hashlib.sha256(page.url.encode()).hexdigest()[:16] + '.html')
+        market = {'source': 'product_store_api_and_page', 'country': country,
+                  'currency': product['currency']}
     market_name = 'woocommerce-market-' + hashlib.sha256(market_url.encode()).hexdigest()[:16] + '.json'
     evidence = Path(evidence); evidence.mkdir(parents=True, exist_ok=True)
     save_json(evidence / source_name, raw)
     save_json(evidence / market_name, market)
+    if market_html_name:
+        (evidence / market_html_name).write_text(page.text, encoding='utf-8')
     return {'url': url, 'source': 'json', 'endpoint': endpoint, 'product': product,
             'source_mapping': {'kind': KIND, 'file': 'evidence/' + source_name,
-                               'market_file': 'evidence/' + market_name}}
+                               'market_file': 'evidence/' + market_name,
+                               'market_mode': market_mode,
+                               'market_html_file': ('evidence/' + market_html_name
+                                                    if market_html_name else None)}}
+
+
+def _page_country(html):
+    """Return US only from explicit locale/address storefront evidence."""
+    soup = parse_soup(html or '', 'lxml')
+    html_tag = soup.find('html')
+    language = str(html_tag.get('lang') or '') if html_tag else ''
+    if re.fullmatch(r'en[-_]US', language, re.I):
+        return 'US'
+    locale = soup.select_one('meta[property="og:locale" i][content]')
+    if locale and re.fullmatch(r'en[-_]US', str(locale.get('content') or ''), re.I):
+        return 'US'
+    if re.search(r'"addressCountry"\s*:\s*"(?:US|USA|United States)"', html or '', re.I):
+        return 'US'
+    return ''
 
 
 def _source(root, sample):
@@ -169,8 +213,18 @@ def product_market(root, sample):
     if not path.is_relative_to((Path(root) / 'evidence').resolve()):
         raise CrawlError('WooCommerce 市场源越界')
     market = read_json(path)
-    country = (market.get('shipping_address') or {}).get('country')
-    currency = (market.get('totals') or {}).get('currency_code')
+    mode = mapping.get('market_mode', 'cart')
+    if mode == 'product_store_api_and_page':
+        raw = _source(root, sample)
+        prices = raw[0].get('prices') if isinstance(raw, list) and raw else {}
+        currency = (prices or {}).get('currency_code')
+        html_path = (Path(root) / str(mapping.get('market_html_file') or '')).resolve()
+        if not html_path.is_relative_to((Path(root) / 'evidence').resolve()):
+            raise CrawlError('WooCommerce 市场页面源越界')
+        country = _page_country(html_path.read_text(encoding='utf-8'))
+    else:
+        country = (market.get('shipping_address') or {}).get('country')
+        currency = (market.get('totals') or {}).get('currency_code')
     if country != 'US' or currency != 'USD':
         raise CrawlError('WooCommerce 购物车未证明 US/USD')
     return country, currency

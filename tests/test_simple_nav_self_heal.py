@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 from core.common import CrawlError, read_json
 from core.simple_nav import (AI_TIMEOUT_SECONDS, OUTLINE_COVERAGE_THRESHOLD,
                              SELF_HEAL_TIMEOUT_SECONDS,
-                             _canonicalize_ai_roots, _reject_exploded_labels,
+                             _canonicalize_ai_roots, _custom_navigation_for_ai,
+                             _reject_exploded_labels,
                              _repair_repeated_control_labels,
                              extract_url_json_with_ai,
                              slim_html_for_ai)
@@ -24,6 +25,23 @@ def menu(count=5):
 
 
 class SimpleNavSelfHealTests(unittest.TestCase):
+    def test_custom_element_menu_falls_back_to_cleaned_document_catalogue(self):
+        html = '''<html><body><store-menu><div class="flyout">
+          <a href="/shop/women">Women</a>
+          <a href="/shop/women/boots">Boots</a>
+          <a href="/shop/men">Men</a>
+          <a href="/account">Account</a>
+        </div></store-menu><footer><a href="/shop/footer-sale">Footer sale</a></footer>
+        </body></html>'''
+        data = _custom_navigation_for_ai(html, BASE)
+        self.assertIsNotNone(data)
+        self.assertEqual(data['source_navigation_urls'], [
+            BASE + 'shop/women', BASE + 'shop/women/boots', BASE + 'shop/men'])
+        self.assertNotIn('footer-sale', data['text'])
+
+    def test_empty_input_is_not_sibling_label_explosion(self):
+        self.assertEqual(_reject_exploded_labels({}, ''), set())
+
     def test_split_desktop_navs_own_their_branches_and_remove_union_mobile_duplicate(self):
         html = '''<header>
         <nav class="desktop-main"><ul><li><div><a href="/collections/bags">Bags</a></div>
@@ -342,8 +360,8 @@ class SimpleNavSelfHealTests(unittest.TestCase):
             '[a] Item 2 -> /collections/item-2',
         ])
         categories = {'Item 0 Item 1 Item 2': BASE + 'collections/item-0'}
-        with self.assertRaisesRegex(CrawlError, '混入多个兄弟菜单文本'):
-            _reject_exploded_labels(categories, outline)
+        self.assertEqual(_reject_exploded_labels(categories, outline),
+                         {'Item 0 Item 1 Item 2'})
 
     def test_ancestor_words_do_not_turn_two_nested_headings_into_siblings(self):
         outline = '\n'.join([
@@ -563,8 +581,9 @@ class SimpleNavSelfHealTests(unittest.TestCase):
             self.assertIn('--ignore-rules', command)
             self.assertIn('sandbox_workspace_write.network_access=false', command)
             self.assertIn('shell_environment_policy.inherit=none', command)
-            self.assertIn('--approve-for-me', command)
-            self.assertIn('--trust', command)
+            self.assertNotIn('--approve-for-me', command)
+            self.assertNotIn('--trust', command)
+            self.assertIn('--dangerously-bypass-approvals-and-sandbox', command)
             self.assertNotIn('approval_policy=never', command)
             self.assertTrue(any(command[i:i + 2] == ['--enable', 'code_mode_host']
                                 for i in range(len(command) - 1)))
@@ -768,7 +787,7 @@ class SimpleNavSelfHealTests(unittest.TestCase):
         def launch(command, **kwargs):
             commands.append(command)
             sandbox = Path(kwargs['cwd'])
-            if '--sandbox' in command:
+            if '--sandbox' in command and command[command.index('--sandbox') + 1] == 'read-only':
                 output = Path(command[command.index('-o') + 1])
                 output.write_text(json.dumps({'entries': [
                     {'key': 'Item 0', 'url': BASE + 'collections/item-0'}]}), encoding='utf-8')
@@ -792,13 +811,39 @@ class SimpleNavSelfHealTests(unittest.TestCase):
             self.assertEqual(len(categories), 5)
             self.assertEqual(len(commands), 2)
             self.assertEqual(commands[0][commands[0].index('--sandbox') + 1], 'read-only')
-            self.assertIn('--approve-for-me', commands[1])
+            self.assertIn('--dangerously-bypass-approvals-and-sandbox', commands[1])
             self.assertEqual(read_json(root / 'navigation_invocation.json')['invocation_modes'],
                              ['outline', 'self_heal'])
             warnings = read_json(root / 'warnings.json')
             self.assertEqual(warnings[0]['code'], 'navigation_self_healed')
             self.assertEqual(warnings[1]['code'], 'navigation_output_self_heal_retry')
             self.assertTrue((root / 'url.json').exists())
+
+    def test_small_menu_with_complete_root_is_warning_not_rejection(self):
+        data = slim_html_for_ai(menu(), BASE)
+        data['bytes'] = 1024
+        data['source_navigation_urls'] = [BASE + f'collections/item-{i}' for i in range(5)]
+        data['valid_urls'] = list(data['source_navigation_urls'])
+        data['navigation_coverage'].update({
+            'needs_self_heal': False, 'source_roots': [], 'outline_roots': [],
+            'primary_root_bar': [], 'root_ratio': 1.0})
+        entries = [{'key': 'Shop', 'url': BASE + 'collections/item-0'},
+                   {'key': 'Shop,Shop New', 'url': BASE + 'collections/item-1'}]
+        def launch(command, **kwargs):
+            output = Path(command[command.index('-o') + 1])
+            output.write_text(json.dumps({'entries': entries}), encoding='utf-8')
+            process = MagicMock()
+            process.returncode = 0
+            return process
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.simple_nav.shutil.which', return_value='codex.exe'), patch(
+                'core.simple_nav.subprocess.Popen', side_effect=launch):
+            result = extract_url_json_with_ai(directory, BASE, data)
+            warnings = read_json(Path(directory) / 'warnings.json')
+        self.assertEqual(len(result), 2)
+        self.assertTrue(any(item['code'] == 'navigation_small_menu_coverage_relaxed'
+                            for item in warnings))
 
     def test_all_urls_flattened_under_wrong_root_are_rejected(self):
         html = '''<header><nav><ul>
@@ -815,7 +860,7 @@ class SimpleNavSelfHealTests(unittest.TestCase):
 
         def launch(command, **kwargs):
             sandbox = Path(kwargs['cwd'])
-            if '--sandbox' in command:
+            if '--sandbox' in command and command[command.index('--sandbox') + 1] == 'read-only':
                 output = Path(command[command.index('-o') + 1])
                 output.write_text(json.dumps({'entries': entries}), encoding='utf-8')
             else:

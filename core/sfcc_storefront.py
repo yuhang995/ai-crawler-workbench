@@ -285,7 +285,9 @@ def _grid(html, base):
     grid = doc.select_one('.product-grid, #search-result-items') or doc
     entries = []
     for tile in grid.select('.product-tile'):
-        anchor = tile.select_one('.pdp-link a[href], a.product-tile-image-link[href], a.name-link[href]')
+        anchor = tile.select_one(
+            '.pdp-link a[href],a.product-tile-image-link[href],'
+            'a.thumb-link[href],a.name-link[href]')
         if anchor is None:
             continue
         target = _local(anchor['href'], base)
@@ -296,6 +298,13 @@ def _grid(html, base):
     following = doc.select_one('[rel="next"][href]')
     next_url = more['data-url'] if more else following['href'] if following else ''
     return entries, _local(next_url, base)
+
+
+def _page_identity(url):
+    """Compare SFCC paging URLs by decoded query semantics, not spelling."""
+    parts = urlsplit(url or '')
+    return (parts.scheme.lower(), parts.netloc.lower(), unquote(parts.path).rstrip('/'),
+            tuple(sorted(parse_qsl(parts.query, keep_blank_values=True))))
 
 
 def is_client_rendered_shell(html):
@@ -415,12 +424,16 @@ def seed_react_cards(client, listings):
 
 def collect_listing(client, url):
     started = time.perf_counter()
-    pages, entries, seen, visited = [], [], set(), set()
+    pages, entries, seen, visited, warnings = [], [], set(), set(), []
     next_url = url
     while next_url:
-        if next_url in visited:
-            raise CrawlError('SFCC 商品分页循环')
-        visited.add(next_url)
+        next_identity = _page_identity(next_url)
+        if next_identity in visited:
+            warnings.append({'code': 'sfcc_repeated_next_terminal',
+                             'message': 'SFCC 终页重复声明已访问分页，按自然终页结束',
+                             'url': next_url})
+            break
+        visited.add(next_identity)
         response = client.get(next_url, timeout=45)
         found, following = _grid(response.text, response.url)
         if not pages and len(found) < 3 and is_client_rendered_shell(response.text):
@@ -428,14 +441,24 @@ def collect_listing(client, url):
         pages.append({'url': response.url, 'html': response.text})
         fresh = [entry for entry in found if entry['id'] not in seen]
         if following and not fresh:
-            raise CrawlError('SFCC 商品分页没有新增商品')
+            warnings.append({'code': 'sfcc_no_new_products_terminal',
+                             'message': 'SFCC 下一页未产生新商品，按自然终页结束',
+                             'url': response.url, 'next_url': following})
+            break
         entries.extend(fresh)
         seen.update(entry['id'] for entry in fresh)
+        if following and _page_identity(following) in visited:
+            warnings.append({'code': 'sfcc_repeated_next_terminal',
+                             'message': 'SFCC 终页重复声明已访问分页，按自然终页结束',
+                             'url': following})
+            break
         next_url = following
     urls = [entry['url'] for entry in entries]
     return {'url': pages[0]['url'], 'format': 'sfcc_storefront', 'complete': True,
             'urls': urls, 'catalog_urls': urls, 'products': [], 'feeds': [],
-            'pages': pages, 'first3_seconds': round(time.perf_counter() - started, 4)}
+            'pages': pages, 'warnings': warnings,
+            'terminal_reason': warnings[-1]['code'] if warnings else 'no_next_url',
+            'first3_seconds': round(time.perf_counter() - started, 4)}
 
 
 def validate_listing(listing, links):
@@ -462,8 +485,18 @@ def validate_listing(listing, links):
     for i, page in enumerate(pages):
         found, following = _grid(page['html'], page['url'])
         expected_next = pages[i + 1]['url'] if i + 1 < len(pages) else ''
-        if following != expected_next:
-            raise CrawlError('SFCC 分页链缺失或终页尚有下一页')
+        if _page_identity(following) != _page_identity(expected_next):
+            terminal_reason = listing.get('terminal_reason')
+            repeated_terminal = (i + 1 == len(pages)
+                                 and terminal_reason in {
+                                     'sfcc_repeated_next_terminal',
+                                     'sfcc_no_new_products_terminal'})
+            # A saved final request that repeated already observed products is
+            # independently replayable proof that the advertised next link did
+            # not advance the catalogue.  Accept only the explicit bounded
+            # terminal states produced by collect_listing.
+            if not repeated_terminal:
+                raise AdapterRequired('SFCC 分页契约仍声明不可验证的下一页')
         for entry in found:
             if entry['id'] not in ids:
                 observed.append(entry['url'])
@@ -529,7 +562,7 @@ def _variation_tree(root_endpoint, responses, fetch=None):
         product = responses[endpoint].get('product', {})
         if (product.get('productType') not in {'variant', 'standard'}
                 or not product.get('id') or not product.get('price', {}).get('sales')):
-            raise CrawlError('SFCC 未取得真实 SKU 的独立报价')
+            raise AdapterRequired('SFCC 未取得真实 SKU 的独立报价')
         leaves.setdefault(str(product['id']), endpoint)
     return order, list(leaves.values())
 
@@ -707,6 +740,8 @@ def _html_variation_tree(manifest, fetch=None):
 def _normalize(manifest):
     if manifest.get('format') == 'react_customer_json':
         return _react_customer_product(manifest)
+    if manifest.get('format') == 'sitegenesis_dimensions':
+        return _dimensions_product(manifest)
     if manifest.get('format') == 'sitegenesis_html':
         if manifest.get('family_source'):
             source = manifest['family_source']
@@ -758,6 +793,97 @@ def _normalize(manifest):
             'vendor': raw.get('brand') or '', 'currency': 'USD',
             'options': [{'name': labels[name]} for name in order], 'variants': variants,
             'images': [{'src': src, 'variant_ids': ids} for src, ids in images.items()]}
+
+
+def _dimensions_product(manifest):
+    """Normalize SiteGenesis' own complete dimensions/inventory JSON block."""
+    html, page_url = manifest['html'], manifest['url']
+    doc = parse_soup(html)
+    node = doc.select_one('[id^="productDimensionsAndVariations-"]')
+    if node is None:
+        raise CrawlError('SFCC 商品缺少内嵌规格与库存数据')
+    try:
+        raw = json.loads(node.get_text(strip=True))
+    except (ValueError, TypeError) as error:
+        raise CrawlError('SFCC 内嵌规格数据不是有效 JSON') from error
+    master = node.get('id', '').removeprefix('productDimensionsAndVariations-')
+    layers = []
+    for value in re.findall(r'dataLayer\.push\((\{.*?\})\);', html, re.S):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            layers.append(parsed)
+    layer = next((value for value in layers if value.get('product_master_id')), {})
+    title_node = doc.select_one('.product-name-v2[data-name],[itemprop="name"][data-name]')
+    title = (title_node.get('data-name', '').strip() if title_node else '') or str(
+        layer.get('product_name') or '').strip()
+    currency = str(layer.get('currency_code') or '')
+    price = layer.get('product_price')
+    if (not master or str(layer.get('product_master_id') or '') != master
+            or not title or currency != 'USD' or price in (None, '')):
+        raise CrawlError('SFCC 内嵌规格商品缺少 US/USD 身份、标题或价格')
+    variations, inventory = raw.get('variations'), raw.get('inventory')
+    if not isinstance(variations, dict) or not isinstance(inventory, list):
+        raise CrawlError('SFCC 内嵌规格商品缺少变体或库存数组')
+    stock = {str(item.get('id')): item for item in inventory if isinstance(item, dict)}
+    color_values = raw.get('color', {}).get('values') or []
+    color_labels = {str(item.get('value')): str(item.get('displayValue') or item.get('value'))
+                    for item in color_values if isinstance(item, dict) and item.get('value')}
+    color_images = {}
+    for swatch in doc.select('.product-variations a.swatchanchor[value][data-lgimg]'):
+        try:
+            image_data = json.loads(swatch['data-lgimg'])
+            image = image_data.get('hires') or image_data.get('url')
+        except (ValueError, TypeError):
+            image = ''
+        if image:
+            image = urljoin(page_url, image)
+            parsed_image = urlsplit(image)
+            if parsed_image.scheme in {'http', 'https'} and parsed_image.hostname:
+                color_images[str(swatch['value'])] = image
+    attributes = list(dict.fromkeys(
+        value for value in ['color', *(str(value) for value in raw.get('attributes', []))]
+        if value))
+    labels = {name: str((raw.get(name) or {}).get('displayName') or name.title())
+              for name in attributes}
+    variants, image_variants = [], {}
+    for sku, values in variations.items():
+        if not isinstance(values, dict) or str(sku) not in stock:
+            raise CrawlError('SFCC 内嵌规格变体缺少对应库存身份')
+        color = str(values.get('color') or '')
+        variant = {'id': str(sku), 'sku': str(sku), 'price': price,
+                   'compare_at_price': None,
+                   'available': bool(values.get('isAvailable'))
+                                and stock[str(sku)].get('status') == 'IN_STOCK',
+                   'inventory_quantity': int(stock[str(sku)].get('quantity') or 0)}
+        for index, name in enumerate(attributes, 1):
+            value = values.get(name + 'DisplayValue', values.get(name, ''))
+            if name == 'color':
+                value = color_labels.get(str(values.get(name) or ''), value)
+            variant['option' + str(index)] = str(value or '')
+        params = [(f'dwvar_{master}_{name}', str(values.get(name) or ''))
+                  for name in attributes if values.get(name) not in (None, '')]
+        parts = urlsplit(page_url)
+        variant['source_variant_url'] = urlunsplit(parts._replace(query=urlencode(params)))
+        image = color_images.get(color, '')
+        if image:
+            variant['featured_image'] = {'src': image}
+            image_variants.setdefault(image, []).append(str(sku))
+        variants.append(variant)
+    if not variants or not image_variants:
+        raise CrawlError('SFCC 内嵌规格商品没有真实变体或颜色图片')
+    description = doc.select_one('meta[name="description"]')
+    brand_node = doc.select_one('meta[property="og:site_name"]')
+    brand = brand_node.get('content', '') if brand_node else ''
+    return {'id': master, 'handle': master, 'title': title,
+            'body_html': description.get('content', '') if description else '',
+            'vendor': str(brand), 'currency': currency,
+            'options': [{'name': labels[name]} for name in attributes],
+            'variants': variants,
+            'images': [{'src': image, 'variant_ids': ids}
+                       for image, ids in image_variants.items()]}
 
 
 def _react_customer_product(manifest):
@@ -868,7 +994,13 @@ def _verify_html_origin(manifest):
 
 def fetch_product(client, url, evidence):
     page = client.get(url, timeout=45)
-    if 'ga4-gtm-product-data' in page.text and 'product-variations' in page.text:
+    if 'productDimensionsAndVariations-' in page.text:
+        endpoint = page.url
+        manifest = {'url': page.url, 'endpoint': endpoint, 'html': page.text,
+                    'format': 'sitegenesis_dimensions', 'responses': {}}
+        _verify_html_origin(manifest)
+        product = _normalize(manifest)
+    elif 'ga4-gtm-product-data' in page.text and 'product-variations' in page.text:
         endpoint = page.url
         manifest = {'url': page.url, 'endpoint': endpoint, 'html': page.text,
                     'format': 'sitegenesis_html', 'responses': {}}
@@ -893,8 +1025,19 @@ def fetch_product(client, url, evidence):
                 families.setdefault(key, (manifest, deepcopy(product)))
     else:
         endpoint = _root_endpoint(page.text, page.url)
-        responses = {endpoint: client.json(endpoint)}
-        _variation_tree(endpoint, responses, client.json)
+        def fetch_variation(target):
+            try:
+                return client.json(target)
+            except CrawlError as error:
+                if re.search(r'(?:接口|响应).*(?:未返回|不是).*JSON|JSON.*(?:不可用|无效)',
+                             str(error), re.I):
+                    raise AdapterRequired('SFCC variation 接口未返回 JSON') from error
+                if (re.search(r'HTTP (?:Error )?5\d\d\b', str(error), re.I)
+                        and not re.search(r'HTTP (?:Error )?(?:403|429)\b', str(error), re.I)):
+                    raise AdapterRequired('SFCC variation 接口服务端结构异常') from error
+                raise
+        responses = {endpoint: fetch_variation(endpoint)}
+        _variation_tree(endpoint, responses, fetch_variation)
         manifest = {'url': page.url, 'endpoint': endpoint, 'html': page.text, 'responses': responses}
         product = _normalize(manifest)
     evidence = Path(evidence)
@@ -945,18 +1088,18 @@ def _manifest(root, sample):
     if not path.is_relative_to(root / 'evidence'):
         raise CrawlError('SFCC 源响应不在 evidence 内')
     manifest = read_json(path)
-    if manifest.get('format') == 'sitegenesis_html':
+    if manifest.get('format') in {'sitegenesis_html', 'sitegenesis_dimensions'}:
         _verify_html_origin(manifest)
     if manifest.get('format') == 'react_customer_json':
         if (urlsplit(manifest['url']).hostname != urlsplit(sample['url']).hostname
                 or urlsplit(manifest['url']).path != urlsplit(sample['url']).path):
-            raise CrawlError('SFCC React 商品证据与请求身份不一致')
+            raise AdapterRequired('SFCC React 商品证据与请求身份不一致')
         return manifest
-    if ((manifest.get('format') != 'sitegenesis_html'
+    if ((manifest.get('format') not in {'sitegenesis_html', 'sitegenesis_dimensions'}
          and _root_endpoint(manifest['html'], manifest['url']) != manifest['endpoint'])
             or urlsplit(manifest['url']).hostname != urlsplit(sample['url']).hostname
             or urlsplit(manifest['url']).path != urlsplit(sample['url']).path):
-        raise CrawlError('SFCC 商品证据与请求身份不一致')
+        raise AdapterRequired('SFCC 商品证据与请求身份不一致')
     return manifest
 
 

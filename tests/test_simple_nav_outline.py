@@ -141,7 +141,7 @@ class SimpleNavOutlineTests(unittest.TestCase):
         self.assertEqual(data['navigation_outline'].count('-> /collections/'), 188)
         self.assertNotIn('<div', data['text'])
 
-    def test_ai_timeout_is_150_seconds(self):
+    def test_ai_timeout_is_210_seconds(self):
         data = slim_html_for_ai('<nav><a href="/collections/all">All</a></nav>', BASE)
         with tempfile.TemporaryDirectory() as directory:
             process = MagicMock()
@@ -155,7 +155,26 @@ class SimpleNavOutlineTests(unittest.TestCase):
             with patch('core.simple_nav.shutil.which', return_value='codex.exe'), patch(
                     'core.simple_nav.subprocess.Popen', side_effect=launch):
                 extract_url_json_with_ai(directory, BASE, data)
-            self.assertEqual(process.communicate.call_args.kwargs['timeout'], 150)
+            self.assertEqual(process.communicate.call_args.kwargs['timeout'], 210)
+
+    def test_oversized_duplicate_outline_is_bounded_without_changing_source_ledger(self):
+        repeated = ''.join(
+            f'<a href="/collections/item-{index}">' + ('Long description ' * 80) + f'{index}</a>'
+            for index in range(500))
+        html = '<header><nav>' + repeated + repeated + '</nav></header>'
+        data = slim_html_for_ai(html, BASE)
+        self.assertLessEqual(data['bytes'], 40 * 1024)
+        self.assertGreater(data['uncompressed_bytes'], data['bytes'])
+        self.assertEqual(len(data['source_navigation_urls']), 500)
+
+    def test_utility_category_like_links_are_excluded_from_coverage_denominator(self):
+        html = '''<header><nav><a href="/collections/shop">Shop</a>
+          <a href="/collections/new">New</a><a href="/collections/about-us">About</a>
+          <a href="/collections/help">Help</a></nav></header>'''
+        data = slim_html_for_ai(html, BASE)
+        self.assertEqual(set(data['coverage_source_urls']), {
+            BASE + 'collections/shop', BASE + 'collections/new'})
+        self.assertEqual(data['navigation_coverage']['source_urls'], 2)
 
 
 if __name__ == '__main__':

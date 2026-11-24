@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -19,9 +20,18 @@ from bs4 import Comment
 from .html_parser import parse_soup
 from .common import CrawlError, read_json, save_json, split_category_key
 
-AI_TIMEOUT_SECONDS = 150
+AI_TIMEOUT_SECONDS = 210
 SELF_HEAL_TIMEOUT_SECONDS = 300
 OUTLINE_COVERAGE_THRESHOLD = .60
+RENDER_MIN_CATEGORY_LINKS = 3
+RENDER_MIN_SLIM_BYTES = 1536
+# Leave headroom for Windows CRLF expansion when the prompt is persisted.
+MAX_AI_SLIM_BYTES = 38 * 1024
+NAVIGATION_AI_SEMAPHORE = threading.Semaphore(
+    max(1, int(os.environ.get('NAVIGATION_AI_CONCURRENCY', '1'))))
+_COVERAGE_UTILITY = re.compile(
+    r'/(?:account|login|search|about(?:-us)?|blog|blogs|help|support|contact(?:-us)?|faq|'
+    r'careers?|stores?|shipping|returns?|privacy|terms|wholesale|corporate)(?:/|$)', re.I)
 NATIVE_NAV_METHODS = {'custom_demandware', 'custom_braun_mia', 'custom_magento', 'custom_bigcommerce', 'custom_pinia', 'custom_unknown'}
 EDITABLE_NAV_METHODS = NATIVE_NAV_METHODS | {'simple_nav', 'uploaded_category_file'}
 
@@ -49,10 +59,106 @@ def _root_validation_basis(source_roots, outline_roots, root_ratio, url_ratio=1.
 def legal_url(url, base):
     p, b = urlsplit(url), urlsplit(base)
     path = unquote(p.path).lower()
+    nested_product_range = bool(re.fullmatch(
+        r'(?:/[a-z]{2}(?:-[a-z]{2})?)?/products/[^/]+/[^/]+/?', path, re.I))
     return (p.scheme in ('http', 'https') and p.netloc == b.netloc
-            and not p.username and bool(re.search(r'/(collections|category|categories)/[^/]+', path))
-            and not re.search(r'/(products|pages|blogs|account|login|cart|search)(?:/|$)', path)
+            and not p.username
+            and (bool(re.search(r'/(collections?|category|categories)/[^/]+', path))
+                 or nested_product_range)
+            and not re.search(r'/(pages|blogs|account|login|cart|search)(?:/|$)', path)
+            and (nested_product_range or not re.search(r'/products(?:/|$)', path))
             and not any(word in path for word in ('support', 'warranty', 'faq', 'gift-card', 'gift_card')))
+
+
+def _normalized_outline_url(value, base):
+    """Normalize duplicate noise without discarding real filter queries."""
+    parsed = urlsplit(urljoin(base, value))
+    path = re.sub(r'/+$', '', parsed.path) or '/'
+    query = '&'.join(part for part in parsed.query.split('&')
+                     if part and not re.match(r'(?i)(?:utm_[^=]*|fbclid|gclid)=', part))
+    return parsed._replace(path=path, query=query, fragment='').geturl()
+
+
+def _compact_slim_text(text, base, limit=MAX_AI_SLIM_BYTES):
+    """Bound AI input while retaining the useful navigation outline."""
+    kept, seen_lines, url_counts = [], set(), {}
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line:
+            continue
+        match = re.search(r'\s->\s(\S+)\s*$', line)
+        if match:
+            target = match.group(1)
+            identity = _normalized_outline_url(target, base)
+            if url_counts.get(identity, 0) >= 2:
+                continue
+            url_counts[identity] = url_counts.get(identity, 0) + 1
+            prefix = line[:match.start()].rstrip()
+            if len(prefix) > 180:
+                prefix = prefix[:177].rstrip() + '...'
+            line = prefix + ' -> ' + target
+        elif len(line) > 220:
+            line = line[:217].rstrip() + '...'
+        signature = line.strip()
+        if signature in seen_lines and not match:
+            continue
+        seen_lines.add(signature)
+        kept.append(line)
+    encoded, bounded = 0, []
+    for line in kept:
+        size = len((line + '\n').encode('utf-8'))
+        if encoded + size > limit:
+            continue
+        bounded.append(line)
+        encoded += size
+    return '\n'.join(bounded)
+
+
+def _coverage_catalog_urls(urls):
+    """Remove obvious utility destinations from completeness denominators."""
+    return {url for url in urls if not _COVERAGE_UTILITY.search(urlsplit(url).path)}
+
+
+def _custom_navigation_for_ai(html, base):
+    """Build a bounded outline for stores whose category paths are arbitrary."""
+    from .custom_navigation import catalog_url, navigation_source
+    source = navigation_source(html, base)
+    if not source.get('valid_urls'):
+        return None
+    soup = parse_soup(source.get('navigation_html', ''), 'lxml')
+    lines = []
+    allowed = set(source['valid_urls'])
+    for node in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'button', 'summary', 'a']):
+        label = _label(node).strip()
+        if not label:
+            continue
+        depth = min(6, len([parent for parent in node.parents
+                            if getattr(parent, 'name', None) in {'li', 'ul', 'ol', 'div', 'section', 'nav'}]))
+        prefix = '  ' * depth
+        if node.name == 'a':
+            target = _anchor_target(node, base)
+            if target not in allowed or not catalog_url(target, base):
+                continue
+            lines.append(prefix + '[a] ' + label + ' -> ' + _relative_url(target, base))
+        elif len(label) <= 120:
+            lines.append(prefix + '[label] ' + label)
+    text = ('BASE ' + base + '\nNAVIGATION OUTLINE (indentation preserves DOM ownership):\n'
+            + '\n'.join(lines)
+            + '\nAll [a] targets above are real same-origin catalogue hrefs. '
+              'Resolve relative targets against BASE without changing their path or query.')
+    uncompressed = len(text.encode('utf-8'))
+    text = _compact_slim_text(text, base)
+    urls = list(dict.fromkeys(source['valid_urls']))
+    return {**source, 'text': text, 'bytes': len(text.encode('utf-8')),
+            'uncompressed_bytes': uncompressed, 'url_policy': 'custom',
+            'has_static_navigation': bool(urls), 'coverage_source_urls': urls,
+            'navigation_outline': '\n'.join(lines),
+            'navigation_coverage': {
+                'threshold': OUTLINE_COVERAGE_THRESHOLD, 'source_urls': len(urls),
+                'outline_urls': len(urls), 'covered_urls': len(urls), 'ratio': 1.0,
+                'source_roots': [], 'primary_root_bar': [], 'outline_roots': [],
+                'root_ratio': 1.0, 'effective_root_ratio': 1.0,
+                'root_basis': 'custom_catalog_paths', 'needs_self_heal': False}}
 
 
 def _single_product_store_navigation(html, base):
@@ -85,6 +191,92 @@ def _single_product_store_navigation(html, base):
         return {}
     label = next(label for label, target in candidates if target == urls[0])
     return {label: urls[0]}
+
+
+def _shopify_catalog_landing_navigation(html, base):
+    """Read page-builder catalog landings only when commerce is explicit.
+
+    A small set of Shopify themes use ``/pages/...#section`` URLs instead of
+    collections for their visible Shop taxonomy.  Page URLs remain forbidden
+    by default: this path requires a desktop Shop root, fragment children and
+    at least three real same-origin PDP links in the same published document.
+    """
+    if 'Shopify.currency' not in html and 'cdn.shopify.com' not in html:
+        return {}
+    soup = parse_soup(html, 'lxml')
+    origin = urlsplit(base).hostname
+    product_urls = []
+    for anchor in soup.select('a[href]'):
+        target = urljoin(base, anchor.get('href', ''))
+        parsed = urlsplit(target)
+        if (parsed.hostname == origin
+                and re.fullmatch(r'/products/[^/]+/?', parsed.path, re.I)):
+            product_urls.append(parsed._replace(query='', fragment='').geturl())
+    has_product_proof = len(set(product_urls)) >= 3
+
+    # ``small-hide``/``medium-hide`` normally mean "desktop only" in
+    # Shopify themes, so they must not be treated as mobile markers.
+    mobile = re.compile(r'mobile|drawer|hamburger', re.I)
+    desktop_navs = []
+    for nav in soup.select('header nav, .header-wrapper nav'):
+        marker = ' '.join(nav.get('class', [])) + ' ' + str(nav.get('id') or '')
+        if not mobile.search(marker):
+            desktop_navs.append(nav)
+    # Some compact Shopify brands publish their actual catalogue as several
+    # primary ``Shop X`` page landings rather than collections or PDPs.  Two
+    # or more explicit Shop-labelled links in the desktop nav are sufficient
+    # commerce evidence; ordinary About/FAQ pages remain excluded.
+    shop_landings = []
+    for nav in desktop_navs:
+        for anchor in nav.select('a[href]'):
+            label = _label(anchor).strip()
+            target = urljoin(base, anchor.get('href', ''))
+            parsed = urlsplit(target)
+            if (parsed.hostname == origin
+                    and re.fullmatch(r'/pages/[^/]+/?', parsed.path, re.I)
+                    and re.match(r'^shop\s+\S', label, re.I)):
+                shop_landings.append((label, target))
+    shop_landings = list(dict.fromkeys(shop_landings))
+    if len(shop_landings) >= 2:
+        return dict(shop_landings)
+    if not has_product_proof:
+        return {}
+
+    root_anchor = None
+    for nav in desktop_navs:
+        for anchor in nav.select('a[href]'):
+            label = _label(anchor).strip()
+            target = urljoin(base, anchor.get('href', ''))
+            parsed = urlsplit(target)
+            if (parsed.hostname == origin and re.fullmatch(r'/pages/[^/]+/?', parsed.path, re.I)
+                    and re.fullmatch(r'shop(?:\s+all|\s+now)?', label, re.I)):
+                root_anchor = (label, target)
+                break
+        if root_anchor:
+            break
+    if not root_anchor:
+        return {}
+
+    root_label, root_url = root_anchor
+    result = {root_label: root_url}
+    seen_targets = {root_url}
+    # Fragment links are bounded, explicit ranges inside a product landing.
+    # They may live in the header's controlled drawer even when the root link
+    # itself is rendered in the desktop bar.
+    header = soup.select_one('.header-wrapper,header')
+    for anchor in (header.select('a[href]') if header else []):
+        label = _label(anchor).strip()
+        target = urljoin(base, anchor.get('href', ''))
+        parsed = urlsplit(target)
+        if (not label or parsed.hostname != origin or not parsed.fragment
+                or not re.fullmatch(r'/pages/[^/]+/?', parsed.path, re.I)):
+            continue
+        if target in seen_targets:
+            continue
+        second = root_label + ' ' + label
+        result.setdefault(root_label + ',' + second, target)
+        seen_targets.add(target)
+    return result if len(result) >= 2 else {}
 
 
 def _category_target(base, target):
@@ -1412,15 +1604,16 @@ def slim_html_for_ai(html: str, base_url: str) -> dict:
     source_root_keys = {root.casefold() for root in source_roots}
     outline_root_keys = {root.casefold() for root in outline_roots}
     root_coverage = (len(source_root_keys & outline_root_keys) / len(source_root_keys)) if source_root_keys else 1.0
-    covered_urls = source_navigation_urls & outline_urls
-    coverage = (len(covered_urls) / len(source_navigation_urls)) if source_navigation_urls else 1.0
+    coverage_source_urls = _coverage_catalog_urls(source_navigation_urls)
+    covered_urls = coverage_source_urls & outline_urls
+    coverage = (len(covered_urls) / len(coverage_source_urls)) if coverage_source_urls else 1.0
     effective_roots, root_basis = _root_validation_basis(
         source_roots, outline_roots, root_coverage, coverage)
     effective_root_coverage = ((len(effective_roots & outline_root_keys) / len(effective_roots))
                                if effective_roots else 1.0)
     navigation_coverage = {
         'threshold': OUTLINE_COVERAGE_THRESHOLD,
-        'source_urls': len(source_navigation_urls),
+        'source_urls': len(coverage_source_urls),
         'outline_urls': len(outline_urls),
         'covered_urls': len(covered_urls),
         'ratio': round(coverage, 4),
@@ -1430,7 +1623,7 @@ def slim_html_for_ai(html: str, base_url: str) -> dict:
         'root_ratio': round(root_coverage, 4),
         'effective_root_ratio': round(effective_root_coverage, 4),
         'root_basis': root_basis,
-        'needs_self_heal': bool((source_navigation_urls and coverage < OUTLINE_COVERAGE_THRESHOLD)
+        'needs_self_heal': bool((coverage_source_urls and coverage < OUTLINE_COVERAGE_THRESHOLD)
                                 or (effective_roots
                                     and effective_root_coverage < OUTLINE_COVERAGE_THRESHOLD
                                     and not (primary_root_bar and coverage >= .90))),
@@ -1442,7 +1635,8 @@ def slim_html_for_ai(html: str, base_url: str) -> dict:
             # script/style removal and attribute allow-listing, not the raw
             # header.  This keeps template structure while bounding prompt
             # injection and unrelated page bytes.
-            'source_navigation_urls': sorted(source_navigation_urls), 'self_heal_html': navigation}
+            'source_navigation_urls': sorted(source_navigation_urls),
+            'coverage_source_urls': sorted(coverage_source_urls), 'self_heal_html': navigation}
     trigger_text = '\n'.join('[root] ' + label for label in root_triggers)
     data['text'] = ('BASE ' + base_url + '\nNAVIGATION OUTLINE (indentation preserves DOM ownership):\n' + outline
                     + ('\nHEADER ROOT TRIGGERS (labels only; never URL evidence):\n' + trigger_text
@@ -1450,12 +1644,14 @@ def slim_html_for_ai(html: str, base_url: str) -> dict:
                     + '\nMAIN HOME SERIES (menu-covered URLs omitted):\n' + '\n'.join(home_lines)
                     + '\nAll [a] and [home] targets above are real same-origin category hrefs. '
                       'Resolve relative targets against BASE without changing their path or query.')
+    data['uncompressed_bytes'] = len(data['text'].encode('utf-8'))
+    data['text'] = _compact_slim_text(data['text'], base_url)
     data['bytes'] = len(data['text'].encode('utf-8'))
     return data
 
 
 def rendered_html(base, out, budget=10):
-    """A single bounded browser pass, only when static nav contains no category."""
+    """A single bounded browser pass for missing or suspiciously thin nav."""
     from playwright.sync_api import sync_playwright
     snapshots = []
     deadline = time.monotonic() + budget
@@ -1470,8 +1666,27 @@ def rendered_html(base, out, budget=10):
             try:
                 page.goto(base, wait_until='commit', timeout=remaining())
                 page.locator('header,nav').first.wait_for(state='attached', timeout=min(3000, remaining()))
+                # ``attached`` can precede React/Vue menu hydration by several
+                # seconds.  Wait once within the same hard budget for either
+                # DOMContentLoaded or a real catalogue href; never reopen the
+                # browser or loop indefinitely.
+                try:
+                    page.wait_for_load_state('domcontentloaded', timeout=min(2500, remaining()))
+                except Exception:
+                    pass
+                try:
+                    page.locator(
+                        'header a[href*="/collections/"],nav a[href*="/collections/"],'
+                        'header a[href*="/products/"],nav a[href*="/products/"]'
+                    ).first.wait_for(state='attached', timeout=min(3500, remaining()))
+                except Exception:
+                    if remaining() > 250:
+                        page.wait_for_timeout(min(1000, remaining()))
                 controls = page.locator('header button:visible,header summary:visible,nav button:visible,nav summary:visible,header a:visible')
-                for i in range(min(controls.count(), 24)):
+                # One bounded interaction pass is enough to mount lazy mega
+                # menus without turning navigation recovery into open-ended
+                # browser automation.
+                for i in range(min(controls.count(), 8)):
                     if remaining() < 350:
                         break
                     control = controls.nth(i)
@@ -1489,6 +1704,30 @@ def rendered_html(base, out, budget=10):
         finally:
             browser.close()
     return snapshots
+
+
+def _rendered_body_category_digest(html, base):
+    """Return real category anchors from the complete rendered document.
+
+    This is used only after header/nav extraction remains thin.  It includes
+    main cards and footer shop-taxonomy links, but still applies the same
+    same-origin category policy and never admits product/account/content URLs.
+    """
+    soup = parse_soup(html, 'lxml')
+    lines, urls = [], []
+    for anchor in soup.select('body a[href],main a[href],footer a[href]'):
+        target = _anchor_target(anchor, base)
+        if (not legal_url(target, base) or _universally_hidden(anchor)
+                or target in urls):
+            continue
+        label = (' '.join(str(anchor.get('aria-label') or anchor.get('title') or '').split())
+                 or next((' '.join(str(item).split()) for item in anchor.find_all(string=True)
+                          if str(item).strip()), ''))
+        if not label or len(label) > 120:
+            continue
+        urls.append(target)
+        lines.append('[home] ' + label + ' -> ' + _relative_url(target, base))
+    return lines, urls
 
 
 def clean_categories(candidate, valid_urls, base, *, url_check=legal_url):
@@ -1708,7 +1947,7 @@ def _validate_self_heal_candidate(value, valid_urls):
 
 
 def _reject_exploded_labels(categories, outline):
-    """Reject a parent title made by concatenating several sibling labels."""
+    """Identify isolated labels made by concatenating sibling menu text."""
     observed = set()
     # A menu deeper than the three-level output contract is flattened by
     # joining adjacent visual headings (for example ``Shop by iPhone Size``
@@ -1734,7 +1973,8 @@ def _reject_exploded_labels(categories, outline):
                 nested_combinations.add(' / '.join(chain[start:]).casefold())
             stack = chain
     if len(observed) < 3:
-        return
+        return set()
+    exploded = set()
     for key in categories:
         parts = split_category_key(key)
         for depth, part in enumerate(parts):
@@ -1752,9 +1992,11 @@ def _reject_exploded_labels(categories, outline):
             ancestors = {ancestor.casefold() for ancestor in parts[:depth]}
             embedded = {label for label in observed
                         if label not in ancestors
+                        and len(label) >= 5
                         and re.search(r'(?<!\w)' + re.escape(label) + r'(?!\w)', folded)}
             if len(embedded) >= 3:
-                raise CrawlError('目录标题混入多个兄弟菜单文本，拒绝发布: ' + local)
+                exploded.add(key)
+    return exploded
 
 
 def _terminate_ai_process(proc):
@@ -1768,6 +2010,11 @@ def _terminate_ai_process(proc):
 def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
     root = Path(root)
     (root / 'evidence').mkdir(parents=True, exist_ok=True)
+    if slim_data.get('url_policy') == 'custom' and '<' in slim_data.get('text', ''):
+        compact_custom = _custom_navigation_for_ai(
+            slim_data.get('navigation_html') or slim_data.get('self_heal_html', ''), base_url)
+        if compact_custom:
+            slim_data = compact_custom
     (root / 'evidence/slim_nav.txt').write_text(slim_data['text'], encoding='utf-8')
     private_fields = {'text', 'navigation_html', 'self_heal_html'}
     save_json(root / 'evidence/simple_nav_sources.json', {k: v for k, v in slim_data.items() if k not in private_fields})
@@ -1795,7 +2042,11 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
         prompt_name = 'navigation_self_heal_prompt.txt' if self_heal else 'navigation_prompt.txt'
         log_name = 'navigation_self_heal_ai.log' if self_heal else 'navigation_ai.log'
         (root / prompt_name).write_text(prompt, encoding='utf-8')
-        with tempfile.TemporaryDirectory(prefix='simple-nav-heal-' if self_heal else 'simple-nav-') as temp:
+        # Codex CLI sessions share a local runtime which is effectively
+        # serial on ordinary workstations. Queue before creating the child so
+        # waiting never consumes its 210/300-second execution budget.
+        with NAVIGATION_AI_SEMAPHORE, tempfile.TemporaryDirectory(
+                prefix='simple-nav-heal-' if self_heal else 'simple-nav-') as temp:
             sandbox = Path(temp)
             save_json(sandbox / 'schema.json', schema)
             if self_heal:
@@ -1818,8 +2069,7 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
                 # read-only even with automatic approval.  Trust is scoped to
                 # this disposable parser sandbox; project rules remain ignored.
                 command.remove('--ignore-user-config')
-                command += ['--approve-for-me',
-                            '--trust',
+                command += ['--dangerously-bypass-approvals-and-sandbox',
                             '-c', 'sandbox_workspace_write.network_access=false',
                             '-c', 'shell_environment_policy.inherit=none',
                             '--enable', 'code_mode', '--enable', 'code_mode_host']
@@ -1922,7 +2172,8 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
                 url_check = catalog_url
             categories, warnings = clean_categories(
                 output.get('entries', []), slim_data['valid_urls'], base_url, url_check=url_check)
-            source_urls = set(slim_data.get('source_navigation_urls', []))
+            source_urls = set(slim_data.get('coverage_source_urls',
+                                            slim_data.get('source_navigation_urls', [])))
             initial_output_coverage = ((len(source_urls & set(categories.values())) / len(source_urls))
                                        if source_urls else 1.0)
             source_roots = coverage.get('source_roots', [])
@@ -1984,12 +2235,27 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
                                  'message': '导航 URL 覆盖率已达 90%，一级名称归属差异降级为警告',
                                  'output_coverage': round(output_coverage, 4),
                                  'output_root_coverage': round(output_root_coverage, 4)})
+            small_menu_relaxed = bool(
+                slim_data.get('bytes', 0) <= 6 * 1024
+                and output_root_coverage >= .80
+                and valid_output_roots
+                and categories
+                and all(url in set(slim_data.get('valid_urls', []))
+                        for url in categories.values()))
+            if small_menu_relaxed and output_coverage < OUTLINE_COVERAGE_THRESHOLD:
+                warnings.append({
+                    'code': 'navigation_small_menu_coverage_relaxed',
+                    'message': '极简品牌菜单一级归属完整；未采纳的杂项或重复链接降级为警告',
+                    'output_coverage': round(output_coverage, 4),
+                    'output_root_coverage': round(output_root_coverage, 4),
+                })
             required_root_ratio = (1.0 if root_basis == 'source_outline_intersection'
                                    and len(validation_roots) <= 12 else OUTLINE_COVERAGE_THRESHOLD)
             incomplete_output = (
-                (source_urls and output_coverage < OUTLINE_COVERAGE_THRESHOLD)
+                (source_urls and output_coverage < OUTLINE_COVERAGE_THRESHOLD
+                 and not small_menu_relaxed)
                 or (validation_roots and output_root_coverage < required_root_ratio
-                    and not high_coverage_root_mismatch))
+                    and not high_coverage_root_mismatch and not small_menu_relaxed))
             coverage.update({
                 'final_ai_output_ratio': round(output_coverage, 4),
                 'final_ai_root_ratio': round(output_root_coverage, 4),
@@ -2009,7 +2275,18 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
                 continue
             break
 
-        _reject_exploded_labels(categories, slim_data.get('navigation_outline', ''))
+        had_categories_before_noise_filter = bool(categories)
+        exploded = _reject_exploded_labels(categories, slim_data.get('navigation_outline', ''))
+        for key in exploded:
+            url = categories.pop(key, None)
+            warnings.append({'code': 'removed_exploded_menu_label', 'key': key, 'url': url,
+                             'message': '剔除单条混入多个兄弟菜单文本的异常分类标题'})
+        if had_categories_before_noise_filter and exploded and not categories:
+            raise CrawlError('目录候选仅包含兄弟菜单拼接噪音')
+        if not categories:
+            if not slim_data.get('valid_urls'):
+                raise CrawlError('静态与浏览器证据均未取得真实分类链接；可能为动态菜单未挂载或访问挑战')
+            raise CrawlError('目录 AI 未从真实候选链接生成可用目录')
         if self_heal_attempted:
             if not categories or incomplete_output:
                 save_json(root / 'warnings.json', [{'code': 'navigation_self_heal_incomplete',
@@ -2065,6 +2342,23 @@ def run_simple(root, base, html):
         return categories, {'method': 'simple_nav',
                             'source': 'single_product_primary_navigation',
                             'roots': list(categories)}, [html]
+    categories = _shopify_catalog_landing_navigation(html, base)
+    if categories:
+        urls = list(dict.fromkeys(categories.values()))
+        save_json(root / 'evidence/simple_nav_sources.json',
+                  {'base_url': base, 'valid_urls': urls,
+                   'source': 'shopify_catalog_landing_navigation'})
+        save_json(root / 'navigation_timing.json',
+                  {'mode': 'shopify_catalog_landing_navigation', 'cli_seconds': 0,
+                   'llm_invocations': 0})
+        warnings = [{'code': 'verified_catalog_landing_navigation',
+                     'message': '主导航商品落地页及锚点范围已由真实商品链接确认'}]
+        save_json(root / 'warnings.json', warnings)
+        publish_simple(root, categories, warnings,
+                       scope='published_verified_catalog_landing_navigation')
+        return categories, {'method': 'simple_nav',
+                            'source': 'shopify_catalog_landing_navigation',
+                            'roots': [next(iter(categories))]}, [html]
     categories = _hydrogen_navigation(html, base)
     if categories:
         urls = list(dict.fromkeys(categories.values()))
@@ -2092,7 +2386,17 @@ def run_simple(root, base, html):
         publish_simple(root, categories, scope='published_header_menu_and_home_links')
         return categories, {'method': 'simple_nav', 'source': 'pack_header_menu', 'roots': []}, [html]
     data = slim_html_for_ai(html, base)
-    if not data['has_static_navigation']:
+    # Before paying for a browser render, recover arbitrary same-origin
+    # catalogue paths from non-standard navigation containers.  This is URL-
+    # and evidence-driven and does not depend on a site/domain allow-list.
+    if len(data.get('source_navigation_urls', [])) < RENDER_MIN_CATEGORY_LINKS:
+        custom_data = _custom_navigation_for_ai(html, base)
+        if (custom_data and len(custom_data.get('source_navigation_urls', []))
+                > len(data.get('source_navigation_urls', []))):
+            data = custom_data
+    if (not data['has_static_navigation']
+            or len(data.get('source_navigation_urls', [])) < RENDER_MIN_CATEGORY_LINKS
+            or data.get('bytes', 0) < RENDER_MIN_SLIM_BYTES):
         try:
             snapshots = rendered_html(base, root / 'evidence')
         except Exception as error:
@@ -2102,6 +2406,17 @@ def run_simple(root, base, html):
         seen = {data['navigation_html']}
         for snapshot in snapshots:
             extra = slim_html_for_ai(snapshot, base)
+            if not extra.get('source_navigation_urls'):
+                custom_extra = _custom_navigation_for_ai(snapshot, base)
+                if (custom_extra and len(custom_extra.get('source_navigation_urls', []))
+                        > len(data.get('source_navigation_urls', []))):
+                    extra = custom_extra
+            if (extra.get('url_policy') == 'custom'
+                    and len(extra.get('source_navigation_urls', []))
+                    > len(data.get('source_navigation_urls', []))):
+                data = extra
+                seen.add(extra.get('navigation_html', ''))
+                continue
             if extra['navigation_html'] not in seen:
                 seen.add(extra['navigation_html'])
                 data['text'] += '\nRENDERED SNAPSHOT:\n' + extra['text']
@@ -2112,6 +2427,40 @@ def run_simple(root, base, html):
                 data['source_navigation_urls'] = extra['source_navigation_urls']
                 data['self_heal_html'] = extra['self_heal_html']
                 data['has_static_navigation'] = extra['has_static_navigation']
+            # The browser may reveal a Shopify page-builder catalogue that
+            # was absent from the server shell.  Re-run the same deterministic
+            # proof on that rendered DOM before invoking AI.
+            rendered_catalog = _shopify_catalog_landing_navigation(snapshot, base)
+            if rendered_catalog:
+                urls = list(dict.fromkeys(rendered_catalog.values()))
+                save_json(root / 'evidence/simple_nav_sources.json', {
+                    'base_url': base, 'valid_urls': urls,
+                    'source': 'rendered_shopify_catalog_landing_navigation'})
+                save_json(root / 'navigation_timing.json', {
+                    'mode': 'rendered_shopify_catalog_landing_navigation',
+                    'cli_seconds': 0, 'llm_invocations': 0})
+                warnings = [{'code': 'verified_rendered_catalog_landing_navigation',
+                             'message': '浏览器渲染后的主导航商品落地页已由 Shopify 指纹确认'}]
+                save_json(root / 'warnings.json', warnings)
+                publish_simple(root, rendered_catalog, warnings,
+                               scope='published_rendered_catalog_landing_navigation')
+                return rendered_catalog, {'method': 'simple_nav',
+                                          'source': 'rendered_shopify_catalog_landing_navigation',
+                                          'roots': list(rendered_catalog)}, [html, snapshot]
+        if len(data.get('source_navigation_urls', [])) < RENDER_MIN_CATEGORY_LINKS:
+            broad_lines, broad_urls = [], []
+            for snapshot in snapshots:
+                lines, urls = _rendered_body_category_digest(snapshot, base)
+                broad_lines.extend(line for line in lines if line not in broad_lines)
+                broad_urls.extend(url for url in urls if url not in broad_urls)
+            if broad_urls:
+                data['text'] += ('\nRENDERED DOCUMENT CATEGORY LINKS '
+                                 '(header/main/footer; flat fallback only):\n'
+                                 + '\n'.join(broad_lines))
+                data['valid_urls'] = list(dict.fromkeys(data['valid_urls'] + broad_urls))
+                data['rendered_body_fallback_urls'] = broad_urls
+        data['uncompressed_bytes'] = len(data['text'].encode('utf-8'))
+        data['text'] = _compact_slim_text(data['text'], base)
         data['bytes'] = len(data['text'].encode('utf-8'))
     categories = extract_url_json_with_ai(root, base, data)
     return categories, {'method': 'simple_nav', 'roots': []}, [html]

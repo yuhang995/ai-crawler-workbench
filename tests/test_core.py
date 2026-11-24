@@ -24,6 +24,46 @@ def fixture():
  return samples,detail,listing,rows
 
 class NavigationTests(unittest.TestCase):
+ def test_sfcc_explicit_market_is_observed_without_using_ip_geolocation(self):
+  us = ('CQuotient.locale = "default"; '
+        'app.resources = {"CURRENT_COUNTRY":"US"}; currency=USD')
+  self.assertEqual(observe_market(us), {
+      'countries': ['US'], 'currencies': ['USD'], 'confirmed': True})
+  hk = ('CQuotient.locale = "en_HK"; '
+        'dataLayer.push({"pageCountry":"HK","currencyCode":"HKD"})')
+  self.assertEqual(observe_market(hk), {
+      'countries': ['HK'], 'currencies': ['HKD'], 'confirmed': False})
+
+ def test_market_ignores_non_currency_three_letter_script_words(self):
+  html = '''
+   <script>
+    Shopify.country = "US";
+    Shopify.currency = {"active":"USD"};
+    const labels = {currency: WIN, currencyCode: "CUR", currency_code: "SHO"};
+    const state = {cart_currency: "USD", cashClass: "CAS"};
+    const supported = [{"currency":"CAD"}, {"currency":"EUR"}];
+   </script>
+   <meta property="og:price:currency" content="USD">
+  '''
+  self.assertEqual(observe_market(html), {
+      'countries': ['US'], 'currencies': ['USD'], 'confirmed': True})
+
+ def test_market_ignores_lowercase_country_noise(self):
+  html = '''<script>Shopify.country = "US";
+    Shopify.currency = {"active":"USD"};
+    const words = {"country_code":"at", "pageCountry":"in"};</script>
+    <span data-current-country="at"></span>'''
+  self.assertEqual(observe_market(html), {
+      'countries': ['US'], 'currencies': ['USD'], 'confirmed': True})
+
+ def test_canonical_en_us_with_dollar_price_confirms_headless_market(self):
+  html = '''<link rel="canonical" href="https://shop.example/">
+    <link rel="alternate" hreflang="en-US" href="https://shop.example/">
+    <link rel="alternate" hreflang="en-CA" href="https://ca.shop.example/">
+    <main>Free shipping over $49</main>'''
+  self.assertEqual(observe_market(html), {
+      'countries': ['US'], 'currencies': ['USD'], 'confirmed': True})
+
  def test_template_panel_ownership_and_independent_guard(self):
   from core.navigation_rules import verify_primary_ownership
   h='<div class="header__links"><a href="#" data-meganav-handle="shop">Shop All</a><template><div data-menu-handle="shop"><ul class="meganav__list-parent"><li><h2>#</h2><ul><li><a href="/collections/all">Shop All Products</a></li></ul></li><li><h2>Product Lines</h2><ul><li><a href="/collections/hydration">Hydration</a></li></ul></li></ul></div></template></div>'
@@ -244,6 +284,15 @@ class ProductTests(unittest.TestCase):
     assignments=list(csv.DictReader(f))
    self.assertEqual([(row['Handle'],row['Collection']) for row in assignments],
                     [('p1','Shop'),('p2','Shop'),('p3','Shop')])
+ def test_non_shopify_export_falls_back_handle_and_normalizes_membership_url(self):
+  p=product(1);p.pop('handle')
+  sample={'url':BASE+'/p/widget/?utm_source=sample','source':'json','product':p}
+  with tempfile.TemporaryDirectory() as d:
+   export([sample],{'Widgets':[BASE+'/p/widget?ref=menu']},d)
+   with open(Path(d)/'shopify_import.csv',encoding='utf-8-sig') as f:
+    imported=list(csv.DictReader(f))
+   self.assertEqual({row['Handle'] for row in imported},{'widget'})
+   self.assertEqual(imported[0]['Collection'],'Widgets')
  def test_shopify_collection_uses_deepest_visible_leaf(self):
   categories=['Coffee','Coffee,Coffee Organic Coffee',
               'Coffee,Coffee Organic Coffee,Coffee Organic Coffee Dark Roast']
@@ -265,6 +314,13 @@ class ProductTests(unittest.TestCase):
 class ValidationTests(unittest.TestCase):
  def test_valid(self):
   s,d,l,r=fixture();self.assertEqual(validate_samples(d,s,l,r)['variants'],3)
+ def test_complete_tiny_catalog_accepts_available_first_product(self):
+  p=product(1);url=BASE+'/products/p1'
+  sample={'url':url,'source':'json','product':p}
+  detail={'Shop':[url]}
+  listings={'Shop':{'format':'direct_product','url':url,'urls':[url],'complete':True}}
+  rows=product_rows(sample,['Shop'])
+  self.assertEqual(validate_samples(detail,[sample],listings,rows)['products'],1)
  def test_reject_wrong_order(self):
   s,d,l,r=fixture();d['Shop'].reverse()
   with self.assertRaises(CrawlError):validate_samples(d,s,l,r)
@@ -325,5 +381,48 @@ class DetectorTests(unittest.TestCase):
   for html,mode in [('plain HTML','custom_site'),('Shopify.theme algoliasearch','search_app_shopify'),('Shopify.theme endpoint: "/api/graphql.json"','graphql_shopify')]:
    with self.subTest(mode=mode):self.assertEqual(detect(NoFeed(),BASE,html,cats)['mode'],mode)
   self.assertEqual(detect(Feed(),BASE,'Shopify.theme algoliasearch',cats)['mode'],'standard_shopify')
+
+ def test_verified_shopify_page_catalog_uses_standard_adapter(self):
+  class NoFeed:
+   def json(self,u): raise CrawlError('no collection endpoint')
+  html=('cdn.shopify.com '
+        '<a href="/products/one">One</a><a href="/products/two">Two</a>'
+        '<a href="/products/three">Three</a>')
+  cats={'Shop':'https://example.com/pages/sale',
+        'Shop,Shop Vitamins':'https://example.com/pages/sale#vitamins'}
+  self.assertEqual(detect(NoFeed(),BASE,html,cats)['mode'],'standard_shopify')
+
+ def test_verified_shopify_theme_survives_one_feed_probe_failure(self):
+  class TransientFeed:
+   def json(self,u):
+    if u.endswith('/cart.js'): return {'currency':'USD'}
+    raise CrawlError('temporary feed failure')
+  html=('cdn.shopify.com '
+        '<a href="/products/one">One</a><a href="/products/two">Two</a>'
+        '<a href="/products/three">Three</a>')
+  found=detect(TransientFeed(),BASE,html,{'Shop':BASE+'/collections/shop'})
+  self.assertEqual(found['mode'],'standard_shopify')
+  self.assertTrue(found['market']['confirmed'])
+
+ def test_hydrogen_uses_same_origin_cart_for_missing_home_market(self):
+  class CartOnly:
+   def __init__(self):self.urls=[]
+   def json(self,u):
+    self.urls.append(u)
+    if u.endswith('/cart.js'):return {'currency':'USD'}
+    raise CrawlError('no collection feed')
+  client=CartOnly()
+  found=detect(client,BASE,'oxygen-v2 cdn.shopify.com',
+               {'Shop':BASE+'/collections/shop'})
+  self.assertEqual(found['mode'],'hydrogen_shopify')
+  self.assertTrue(found['market']['confirmed'])
+  self.assertIn(BASE+'/cart.js',client.urls)
+
+ def test_shopify_marker_without_product_evidence_stays_custom(self):
+  class NoFeed:
+   def json(self,u): raise CrawlError('no endpoint')
+  found=detect(NoFeed(),BASE,'cdn.shopify.com <a href="/products/one">One</a>',
+               {'Shop':BASE+'/collections/shop'})
+  self.assertEqual(found['mode'],'custom_site')
 
 if __name__=='__main__':unittest.main()

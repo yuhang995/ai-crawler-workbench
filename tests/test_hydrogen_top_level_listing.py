@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from core.common import CrawlError
+from core.common import AdapterRequired, CrawlError
 from core.shopify_fastpath import (_expand_adjacent_variant_product,
                                    _hydrogen_collection_page,
                                    hydrogen_product_from_html,
@@ -130,6 +130,19 @@ class HydrogenTopLevelListingTests(unittest.TestCase):
         with patch('core.shopify_fastpath._hydrogen_route', return_value=wrong):
             with self.assertRaisesRegex(CrawlError, '币种'):
                 _hydrogen_collection_page('<main/>', URL)
+
+    def test_empty_or_truncated_hydrogen_variants_request_adapter(self):
+        source = {'id': 'gid://shopify/Product/1', 'handle': 'item',
+                  'title': 'Item', 'options': [], 'media': {'nodes': []},
+                  'variants': {'nodes': []}}
+        with self.assertRaises(AdapterRequired):
+            _normalize_hydrogen_product(source, 'item')
+        source['variants']['nodes'] = [{
+            'id': f'gid://shopify/ProductVariant/{index}', 'title': str(index),
+            'selectedOptions': [], 'price': {'amount': '1', 'currencyCode': 'USD'},
+            'availableForSale': True} for index in range(250)]
+        with self.assertRaises(AdapterRequired):
+            _normalize_hydrogen_product(source, 'item')
 
 
 if __name__ == '__main__':

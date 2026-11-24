@@ -9,9 +9,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from core.ai_repair import (PROJECT, _adopt, _checker, _copy_inputs, _prompt,
-                            _stop_process, _unchanged, is_repairable, repair_sample)
-from core.common import AdapterRequired, CrawlError, read_json, save_json
+from core.ai_repair import (PROJECT, _adopt, _checker, _copy_inputs, _prompt, _repair_scope,
+                            _raise_declared_failure, _stop_process, _unchanged,
+                            is_repairable, repair_sample)
+from core.common import (AccessChallenge, AdapterRequired, CrawlError, TaskCancelled,
+                         read_json, save_json)
 from core.navigation_release import digest
 from core.validator import validate
 from test_core import BASE, fixture
@@ -48,6 +50,28 @@ def write_candidate(work, bad_price=False):
         (work / name).write_text('print("fixture script")\n', encoding='utf-8')
 
 
+class AdapterClient:
+    def json(self, url, **kwargs):
+        if '/collections/' in url:
+            return {'urls': [BASE + f'/products/p{index}' for index in range(1, 4)]}
+        match = int(url.split('/products/p', 1)[1].split('?', 1)[0])
+        return {'id': str(match), 'title': f'Product {match}', 'url': BASE + f'/products/p{match}',
+                'currency': 'USD', 'description': 'Observed',
+                'images': [BASE + f'/images/p{match}.jpg'],
+                'variants': [{'id': f'{match}-v', 'price': '12.50', 'currency': 'USD'}]}
+
+    def close(self):
+        pass
+
+
+ADAPTER_SOURCE = '''def collect_product_urls(client, category_url):
+    return client.json(category_url + "?format=json")["urls"]
+
+def fetch_product(client, product_url):
+    return client.json(product_url + "?format=json")
+'''
+
+
 class RepairTests(unittest.TestCase):
     def test_live_page_inspector_is_injected_and_protected(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as sandbox:
@@ -60,7 +84,9 @@ class RepairTests(unittest.TestCase):
             compile(source, str(inspector), 'exec')
             self.assertIn('playwright.sync_api', source)
             self.assertIn("sniffed-", source)
+            self.assertIn("sys.stdout.reconfigure(encoding='utf-8', errors='replace')", source)
             self.assertIn('inspect_live_page.py', protected)
+            self.assertIn('check_adapter.py', protected)
             inspector.write_text(source + '\n# changed\n', encoding='utf-8')
             with self.assertRaisesRegex(CrawlError, '输入发生变化'):
                 _unchanged(work, protected)
@@ -70,20 +96,19 @@ class RepairTests(unittest.TestCase):
             self.assertEqual(read_json(root / 'ai_repair.json')['status'], 'running')
             work = Path(kwargs['cwd'])
             self.assertNotEqual(work, root)
+            self.assertEqual(work.parent, root)
             self.assertTrue((work / 'core/validator.py').is_file())
-            self.assertTrue((work / 'check_sample.py').is_file())
+            self.assertTrue((work / 'check_adapter.py').is_file())
             self.assertNotIn('--ignore-user-config', command)
             self.assertIn('--ignore-rules', command)
             self.assertIn('--ephemeral', command)
-            self.assertIn('--approve-for-me', command)
-            self.assertIn('--trust', command)
-            # This CLI version makes --approve-for-me select its writable
-            # workspace sandbox; passing --sandbox as well is rejected.
+            self.assertNotIn('--approve-for-me', command)
+            self.assertNotIn('--trust', command)
             self.assertNotIn('--sandbox', command)
             self.assertIn('code_mode', command)
             self.assertIn('code_mode_host', command)
             self.assertNotIn('approval_policy=never', command)
-            self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', command)
+            self.assertIn('--dangerously-bypass-approvals-and-sandbox', command)
             self.assertIn('sandbox_workspace_write.network_access=true', command)
             self.assertIn('mcp_servers={}', command)
             self.assertIn('apps', command)
@@ -99,12 +124,12 @@ class RepairTests(unittest.TestCase):
             self.assertEqual(len(scope['selected_categories']), 1)
             process = MagicMock(returncode=0)
             def communicate(prompt, timeout):
-                self.assertIn('check_sample.py', prompt)
-                self.assertIn('最多做3轮', prompt)
-                self.assertIn('首个工具调用必须是单条 Python 命令', prompt)
-                self.assertIn('不得启动 PowerShell 探索', prompt)
+                self.assertIn('site_adapter.py', prompt)
+                self.assertIn('check_adapter.py', prompt)
+                self.assertNotIn('首个工具调用必须', prompt)
+                self.assertNotIn('最多做3轮', prompt)
                 self.assertGreater(timeout, 0)
-                self.assertLessEqual(timeout, 300)
+                self.assertLessEqual(timeout, 420)
                 create(work)
             process.communicate.side_effect = communicate
             return process
@@ -157,6 +182,118 @@ class RepairTests(unittest.TestCase):
             published = read_json(root / 'sample_scope.json')
             self.assertEqual(published['detail_scope'], 'first_3_products')
             self.assertEqual(len(published['selected_categories']), 1)
+
+    def test_repair_scope_skips_marketing_and_offers_more_switch_candidates(self):
+        scope = {'selected_categories': {
+                    'Buy for Business': BASE + '/business'},
+                 'sample_candidates': [
+                    {'category': 'About Us', 'url': BASE + '/about'}] + [
+                    {'category': f'Products {index}', 'url': BASE + f'/category/{index}'}
+                    for index in range(1, 7)]}
+        narrowed = _repair_scope(scope)
+        self.assertEqual(narrowed['selected_categories'], {
+            'Products 1': BASE + '/category/1'})
+        self.assertEqual(len(narrowed['sample_candidates']), 6)
+        self.assertEqual([item['category'] for item in narrowed['sample_candidates']],
+                         [f'Products {index}' for index in range(1, 7)])
+
+    def test_repair_scope_prioritizes_deep_leaf_candidates(self):
+        scope = {'selected_categories': {'Shop': BASE + '/shop'},
+                 'sample_candidates': [
+                     {'category': 'Shop,Shop Shoes', 'url': BASE + '/shoes'},
+                     {'category': 'Shop,Shop Shoes,Shop Shoes Boots',
+                      'url': BASE + '/boots'}]}
+        narrowed = _repair_scope(scope)
+        self.assertEqual(next(iter(narrowed['selected_categories'])),
+                         'Shop,Shop Shoes,Shop Shoes Boots')
+
+    def test_declared_access_failure_is_not_reported_as_missing_adapter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save_json(root / 'failure.json', {
+                'status': 403, 'stage': 'public_api',
+                'url': BASE + '/api', 'reason': 'AWS WAF human verification'})
+            with self.assertRaises(AccessChallenge) as raised:
+                _raise_declared_failure(root)
+        self.assertEqual(raised.exception.url, BASE + '/api')
+
+    def test_adapter_runner_uses_tiny_catalog_only_after_exhausting_candidates(self):
+        from core.adapter_runner import collect_details
+        class Tracker:
+            def __init__(self): self.calls = []
+        class Adapter:
+            def collect_product_urls(self, client, category_url):
+                client.calls.append({'url': category_url, 'file': 'evidence/probe.json',
+                                     'kind': 'json'})
+                return ([category_url + '/product/one'] if category_url.endswith('/tiny')
+                        else [])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'evidence').mkdir()
+            categories = {'Shop,Shop Tiny': BASE + '/tiny',
+                          'Shop,Shop Empty': BASE + '/empty'}
+            save_json(root / 'url.json', categories)
+            save_json(root / 'sample_scope.json', {'sample_candidates': [
+                {'category': key, 'url': url} for key, url in categories.items()]})
+            detail, listings = collect_details(root, Adapter(), Tracker())
+        self.assertEqual(detail, {'Shop,Shop Tiny': [BASE + '/tiny/product/one']})
+        self.assertTrue(listings['Shop,Shop Tiny']['small_catalog'])
+
+    def test_repair_scope_falls_back_to_valid_url_json_when_all_titles_are_marketing(self):
+        scope = {'selected_categories': {'Buy for Business': BASE + '/business'},
+                 'sample_candidates': [{'category': 'About Us',
+                                        'url': BASE + '/about'}]}
+        categories = {'Buy for Business': BASE + '/business',
+                      'About Us': BASE + '/about'}
+        narrowed = _repair_scope(scope, categories)
+        self.assertEqual(narrowed['selected_categories'], {
+            'Buy for Business': BASE + '/business'})
+        self.assertEqual(len(narrowed['sample_candidates']), 2)
+
+    def test_sfcc_structural_adapter_errors_are_repairable_but_access_errors_are_not(self):
+        self.assertTrue(is_repairable(
+            AdapterRequired('SFCC 未取得真实 SKU 的独立报价')))
+        self.assertTrue(is_repairable(
+            AdapterRequired('SFCC 商品证据与请求身份不一致')))
+        self.assertFalse(is_repairable(
+            AdapterRequired('SFCC HTTP 403 Forbidden')))
+
+    def test_site_adapter_runner_passes_and_adopts_independent_wrappers(self):
+        from core.adapter_runner import run_adapter
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as sandbox:
+            root, work = Path(directory), Path(sandbox)
+            prepare_root(root)
+            shutil.copytree(PROJECT / 'core', root / 'core')
+            prepare_root(work)
+            shutil.copytree(PROJECT / 'core', work / 'core')
+            (work / 'site_adapter.py').write_text(ADAPTER_SOURCE, encoding='utf-8')
+            (work / 'check_adapter.py').write_text('print("OK")\n', encoding='utf-8')
+            with patch('core.adapter_runner.Client', AdapterClient):
+                result = run_adapter(work)
+            self.assertTrue(result['passed'])
+            market = read_json(work / 'market_evidence.json')
+            self.assertEqual(market['country_path'], '/market/country')
+            self.assertEqual(market['currency_path'], '/market/currency')
+            original = {str(path.relative_to(root)): 'original'
+                        for path in root.rglob('*') if path.is_file()}
+            _adopt(work, root, original)
+            self.assertTrue((root / 'site_adapter.py').is_file())
+            self.assertTrue((root / 'check_adapter.py').is_file())
+            self.assertIn('core.adapter_runner', (root / 'get_detail_url.py').read_text())
+            self.assertIn('core.adapter_runner', (root / '3.ShopifyCrawl_sort.py').read_text())
+
+    def test_site_adapter_rejects_hardcoded_product_records(self):
+        from core.adapter_runner import run_adapter
+        fake = '''def collect_product_urls(client, category_url):
+    return ["https://example.com/products/a", "https://example.com/products/b", "https://example.com/products/c"]
+def fetch_product(client, product_url):
+    return {"id":"1","title":"Fake","currency":"USD","images":["https://example.com/f.jpg"],"variants":[{"id":"v","price":"9.99"}]}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepare_root(root)
+            (root / 'site_adapter.py').write_text(fake, encoding='utf-8')
+            with self.assertRaisesRegex(CrawlError, '硬编码商品数据|未通过 Client'):
+                run_adapter(root, client=AdapterClient())
 
     def test_listing_dom_accepts_singular_product_path(self):
         from core.shopify_fastpath import listing_dom
@@ -291,8 +428,49 @@ class RepairTests(unittest.TestCase):
                     repair_sample(root, '结构缺少', timeout=1)
             process.wait.assert_called_once()
             self.assertEqual(read_json(root / 'ai_repair.json')['status'], 'failed')
-            self.assertTrue((root / 'ai_repair_candidate/check_sample.py').is_file())
+            self.assertTrue((root / 'ai_repair_candidate/check_adapter.py').is_file())
             self.assertFalse((root / 'detail_url.json').exists())
+
+    def test_timeout_cleanup_lock_does_not_replace_primary_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepare_root(root)
+            process = MagicMock(pid=12345)
+            process.communicate.side_effect = subprocess.TimeoutExpired('codex', 1)
+            locked = PermissionError(32, 'file is in use', 'sample-repair')
+            with patch('core.ai_repair.shutil.which', return_value='codex.exe'), \
+                    patch('core.ai_repair.subprocess.Popen', return_value=process), \
+                    patch('core.ai_repair.subprocess.run'), \
+                    patch('core.ai_repair._remove_tree_iterative', side_effect=locked):
+                with self.assertRaisesRegex(CrawlError, '超过 1 秒'):
+                    repair_sample(root, '结构缺少', timeout=1)
+            state = read_json(root / 'ai_repair.json')
+            self.assertIn('PermissionError', state['cleanup_error'])
+
+    def test_timeout_adopts_site_adapter_that_passes_host_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepare_root(root)
+            process = MagicMock(pid=12345, returncode=-9)
+
+            def timeout_after_candidate(*args, **kwargs):
+                work = next(root.glob('.sample-repair-*'))
+                (work / 'site_adapter.py').write_text(ADAPTER_SOURCE, encoding='utf-8')
+                raise subprocess.TimeoutExpired('codex', 1)
+
+            process.communicate.side_effect = timeout_after_candidate
+            with patch('core.ai_repair.shutil.which', return_value='codex.exe'), \
+                    patch('core.ai_repair.subprocess.Popen', return_value=process), \
+                    patch('core.ai_repair.subprocess.run'), \
+                    patch('core.ai_repair._check_candidate', return_value={'passed': True}) as check, \
+                    patch('core.ai_repair._adopt') as adopt:
+                result = repair_sample(root, '结构缺少', timeout=1)
+            self.assertTrue(result['passed'])
+            check.assert_called_once()
+            adopt.assert_called_once()
+            state = read_json(root / 'ai_repair.json')
+            self.assertEqual(state['status'], 'completed')
+            self.assertTrue(state['timeout_recovered'])
 
     def test_queue_wait_is_bounded_and_does_not_launch_cli(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -303,11 +481,43 @@ class RepairTests(unittest.TestCase):
                     patch('core.ai_repair.subprocess.Popen') as launch:
                 semaphore.acquire.return_value = False
                 with self.assertRaisesRegex(CrawlError, '等待商品修复会话'):
-                    repair_sample(root, '结构错误', timeout=30)
-                self.assertLessEqual(semaphore.acquire.call_args.kwargs['timeout'], 30)
+                    repair_sample(root, '结构错误', timeout=30, queue_timeout=45)
+                self.assertEqual(semaphore.acquire.call_args.kwargs['timeout'], 45)
                 semaphore.release.assert_not_called()
                 launch.assert_not_called()
             self.assertEqual(read_json(root / 'ai_repair.json')['cli_invocations'], 0)
+
+    def test_queue_wait_does_not_reduce_cli_execution_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepare_root(root)
+
+            def launch(command, **kwargs):
+                work = Path(kwargs['cwd'])
+                process = MagicMock(returncode=0)
+
+                def communicate(prompt, timeout):
+                    self.assertEqual(timeout, 300)
+                    write_candidate(work)
+
+                process.communicate.side_effect = communicate
+                return process
+
+            with patch('core.ai_repair.shutil.which', return_value='codex.exe'), \
+                    patch('core.ai_repair.AI_SEMAPHORE') as semaphore, \
+                    patch('core.ai_repair.subprocess.Popen', side_effect=launch):
+                def wait_for_slot(timeout):
+                    import time
+                    time.sleep(0.02)
+                    return True
+                semaphore.acquire.side_effect = wait_for_slot
+                result = repair_sample(root, '结构错误', timeout=300, queue_timeout=1800)
+            self.assertTrue(result['passed'])
+            self.assertEqual(semaphore.acquire.call_args.kwargs['timeout'], 1800)
+            semaphore.release.assert_called_once()
+            state = read_json(root / 'ai_repair.json')
+            self.assertGreaterEqual(state['queue_seconds'], 0.01)
+            self.assertEqual(state['timeout_seconds'], 300)
 
     def test_process_cleanup_waits_are_bounded(self):
         process = MagicMock(pid=12345)
@@ -316,6 +526,27 @@ class RepairTests(unittest.TestCase):
             _stop_process(process)
         self.assertTrue(process.kill.called)
         self.assertEqual([call.kwargs['timeout'] for call in process.wait.call_args_list], [5, 5])
+
+    def test_cancel_event_terminates_running_cli_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepare_root(root)
+            cancelled = __import__('threading').Event()
+            process = MagicMock(pid=12345, returncode=-9)
+
+            def first_poll(*args, **kwargs):
+                cancelled.set()
+                raise subprocess.TimeoutExpired('codex', kwargs['timeout'])
+
+            process.communicate.side_effect = first_poll
+            with patch('core.ai_repair.shutil.which', return_value='codex.exe'), \
+                    patch('core.ai_repair.subprocess.Popen', return_value=process), \
+                    patch('core.ai_repair._stop_process') as stop:
+                with self.assertRaises(TaskCancelled):
+                    repair_sample(root, '结构错误', timeout=30,
+                                  cancel_event=cancelled)
+            stop.assert_called_once_with(process)
+            self.assertEqual(read_json(root / 'ai_repair.json')['status'], 'failed')
 
     def test_policy_rejection_is_reported_instead_of_missing_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -374,22 +605,14 @@ class RepairTests(unittest.TestCase):
                 {'source_mapping': None},
             ])
             prompt = _prompt('samples.json 的 price 类型错误', root)
-            self.assertIn('core.bigcommerce_storefront', prompt)
-            self.assertIn('evidence/observed-product.html', prompt)
-            self.assertIn('parse_product(', prompt)
-            self.assertIn('允许并优先 import', prompt)
-            self.assertIn('--offline', prompt)
-            self.assertIn('--all 抓全部链接', prompt)
-            self.assertIn('脚本正常结束时应自行', prompt)
-            self.assertIn('inspect_live_page.py', prompt)
-            self.assertIn('禁止用正则盲搜', prompt)
-            self.assertIn('240秒前', prompt)
-            self.assertIn('探索严格限制为两步', prompt)
-            self.assertIn('第90秒前', prompt)
-            self.assertIn('product_fields', prompt)
-            self.assertIn('RFC 6901', prompt)
-            self.assertIn('严禁读取 core/ 下无关适配器', prompt)
-            self.assertNotIn('自包含', prompt)
+            self.assertIn('site_adapter.py', prompt)
+            self.assertIn('collect_product_urls', prompt)
+            self.assertIn('fetch_product', prompt)
+            self.assertIn('check_adapter.py', prompt)
+            self.assertIn('可以自由查看', prompt)
+            self.assertNotIn('RFC 6901', prompt)
+            self.assertNotIn('首个工具调用必须', prompt)
+            self.assertNotIn('最多做3轮', prompt)
 
 
 if __name__ == '__main__':

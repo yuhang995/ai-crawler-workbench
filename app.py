@@ -27,7 +27,7 @@ RUNS = ROOT / 'runs'
 JOBS = {}
 LOCK = threading.RLock()
 WORKERS = threading.Semaphore(4)
-APP_VERSION = '1.0.7'
+APP_VERSION = '1.0.8'
 MAX_PARALLEL_JOBS = 4
 MAX_BATCH_SITES = 20
 TERMINAL_STATES = {'completed', 'failed', 'interrupted', 'needs_recheck', 'cancelled'}
@@ -257,6 +257,23 @@ class LocalServer(ThreadingHTTPServer):
         super().server_bind()
 
 
+def _compact_terminal_job(job):
+    """Drop run artifacts from an inactive in-memory job registry entry."""
+    if job.get('status') not in TERMINAL_STATES | {
+            'needs_access_confirm', 'access_confirmed'}:
+        return job
+    categories = job.pop('categories', None)
+    if isinstance(categories, dict):
+        job['category_count'] = len(categories)
+    job.pop('uploaded_categories', None)
+    job['events'] = [
+        {key: value for key, value in event.items()
+         if key not in {'categories', 'report'}}
+        for event in job.get('events', [])
+    ]
+    return job
+
+
 def execute(job):
     with WORKERS:
         try:
@@ -267,7 +284,14 @@ def execute(job):
                 with LOCK:
                     if job.get('status') == 'cancelled' and event['stage'] != 'cancelled':
                         return
-                    job['events'].append(event)
+                    # Large navigation maps and final reports are persisted in
+                    # runs/<id>; keeping another copy in every historical job
+                    # caused multi-site batches to retain hundreds of MB.
+                    public_event = {key: value for key, value in event.items()
+                                    if key not in {'categories', 'report'}}
+                    if 'categories' in event:
+                        public_event['category_count'] = len(event['categories'])
+                    job['events'].append(public_event)
                     job['status'] = event['stage']
                     job['progress'] = max(job.get('progress', 0),
                                           int(event.get('progress', STAGE_PROGRESS.get(event['stage'], 0))))
@@ -284,6 +308,11 @@ def execute(job):
             failure_path = RUNS / job['id'] / 'failure.json'
             if failure_path.is_file() and job.get('status') == 'failed':
                 submit_failure_async(ROOT, RUNS / job['id'], job, APP_VERSION)
+            with LOCK:
+                if job.get('status') in TERMINAL_STATES | {
+                        'needs_access_confirm', 'access_confirmed'}:
+                    _compact_terminal_job(job)
+                    save_json(RUNS / job['id'] / 'progress.json', snapshot(job))
             if job.get('worker_done') is not None:
                 job['worker_done'].set()
 
@@ -309,6 +338,16 @@ def resume_after_access_confirmation(job):
 
 def snapshot(job):
     result={k: v for k, v in job.items() if k not in {'confirm', 'cancel_event', 'worker_done', 'uploaded_categories', 'proxy'}}
+    result['events'] = [
+        {key: value for key, value in event.items()
+         if key not in {'categories', 'report'}}
+        for event in job.get('events', [])
+    ]
+    if job.get('status') in TERMINAL_STATES | {
+            'needs_access_confirm', 'access_confirmed'}:
+        categories = result.pop('categories', None)
+        if isinstance(categories, dict):
+            result['category_count'] = len(categories)
     result['proxy_display'] = redact_proxy(job.get('proxy'))
     if job.get('use_proxy_pool'):
         result['proxy_display'] = '代理池（密码已隐藏）'
@@ -432,7 +471,10 @@ class Handler(BaseHTTPRequestHandler):
                 if uploaded_categories is not None and len(sites) != 1:
                     raise ValueError('手动分类文件一次只能用于一个站点')
                 with LOCK:
-                    active = sum(j['status'] not in ('completed', 'failed', 'interrupted', 'needs_recheck', 'needs_access_confirm', 'access_confirmed') for j in JOBS.values())
+                    active = sum(
+                        j['status'] not in TERMINAL_STATES | {
+                            'needs_access_confirm', 'access_confirmed'}
+                        for j in JOBS.values())
                     if active + len(sites) > 24:
                         return self.respond({'error': '待处理任务过多'}, 429)
                     jobs = []
@@ -595,6 +637,7 @@ def serve(port, host='0.0.0.0'):
             job['confirm'] = threading.Event()
             job['cancel_event'] = threading.Event()
             job['worker_done'] = threading.Event(); job['worker_done'].set()
+            _compact_terminal_job(job)
             JOBS[job['id']] = job
         except (ValueError, KeyError):
             continue

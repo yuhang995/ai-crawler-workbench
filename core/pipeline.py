@@ -237,7 +237,7 @@ def collect_full_shopify_listings(client, categories, evidence_root=None,
 def prepare_runtime(root):
     dest = Path(root) / 'core'
     dest.mkdir(exist_ok=True)
-    for name in ('__init__.py', 'simple_nav.py', 'custom_site.py', 'custom_navigation.py', 'jsonld_storefront.py', 'pinia_storefront.py', 'mobify_storefront.py', 'sfcc_storefront.py', 'magento_storefront.py', 'bigcommerce_storefront.py', 'braun_navigation.py', 'braun_listing.py', 'braun_product.py', 'brumate_navigation.py', 'brumate_listing.py', 'practical_navigation.py', 'shopify_inventory.py', 'html_parser.py', 'browser_screenshot.py', 'visual_audit.py', 'visual_capture.py', 'ai_runtime.py', 'common.py', 'shopify_fastpath.py', 'nav_extractor.py', 'menu_tree.py', 'navigation_rules.py', 'navigation_guard.py', 'navigation_release.py', 'detector.py', 'validator.py'):
+    for name in ('__init__.py', 'simple_nav.py', 'custom_site.py', 'custom_navigation.py', 'jsonld_storefront.py', 'pinia_storefront.py', 'mobify_storefront.py', 'sfcc_storefront.py', 'magento_storefront.py', 'bigcommerce_storefront.py', 'braun_navigation.py', 'braun_listing.py', 'braun_product.py', 'brumate_navigation.py', 'brumate_listing.py', 'practical_navigation.py', 'shopify_inventory.py', 'html_parser.py', 'browser_screenshot.py', 'visual_audit.py', 'visual_capture.py', 'ai_runtime.py', 'common.py', 'shopify_fastpath.py', 'adapter_runner.py', 'nav_extractor.py', 'menu_tree.py', 'navigation_rules.py', 'navigation_guard.py', 'navigation_release.py', 'detector.py', 'validator.py'):
         shutil.copyfile(PROJECT / 'core' / name, dest / name)
     for name, body in {
         'get_detail_url.py': "from pathlib import Path\nfrom core.common import read_json\nroot=Path(__file__).resolve().parent\ndetection=read_json(root/'detection.json')\nif detection.get('custom_platform') in {'demandware', 'braun_mia', 'magento', 'bigcommerce', 'pinia', 'mobify', 'jsonld'}:\n    from core.custom_site import run_links\nelse:\n    from core.shopify_fastpath import run_links\nif __name__ == '__main__':\n    run_links(root)\n",
@@ -322,6 +322,19 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
             save_json(root / 'origin_resolution.json', {'entry': base, 'requested':requested.url,'canonical':response.url,'same_store_verified':True})
         base, html = response.url, response.text
         (root / 'evidence' / 'home.html').write_text(html, encoding='utf-8')
+        # Do not spend minutes extracting a foreign catalogue and then ask the
+        # repair AI to turn HK/EU prices into US data.  An explicit non-US
+        # storefront selection is authoritative and can only be recovered by
+        # rerunning with an appropriate US exit proxy/session.
+        from .detector import observe_market
+        observed_home_market = observe_market(html)
+        if ((observed_home_market['countries']
+             and set(observed_home_market['countries']) != {'US'})
+                or (observed_home_market['currencies']
+                    and set(observed_home_market['currencies']) != {'USD'})):
+            raise CrawlError(
+                '入口已明确跳转到非 US/USD 店面；请使用美国出口代理后重试。'
+                f' 当前市场: {observed_home_market}')
         from .custom_site import identify_platform, SUPPORTED_PLATFORMS
         custom_platform = identify_platform(html)
         t = time.perf_counter()
@@ -582,7 +595,12 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
             }
             save_json(root / 'evidence' / 'repair_failure_context.json', context)
             full_scope = read_json(root / 'sample_scope.json')
-            recover(root, str(error))
+            if cancel_event is None:
+                # Preserve the historical two-argument extension seam used by
+                # embedders and test doubles outside the workbench.
+                recover(root, str(error))
+            else:
+                recover(root, str(error), cancel_event=cancel_event)
             if full_products:
                 # The model is deliberately validated on one category and
                 # three parents.  Only the host may expand the adopted,
@@ -840,7 +858,17 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
             samples = repair_sample(AdapterRequired('explicit custom handling' if force_ai else detection['mode']))
         else:
             if not detection['market']['confirmed']:
-                raise CrawlError('标准 Shopify 首页未确认 US/USD')
+                # Explicit foreign markets were rejected before navigation.
+                # An otherwise proven Shopify shell with no declaration may
+                # reach its real product source; validate() still requires
+                # market_evidence.json to prove US/USD before packaging.
+                warnings_path = root / 'warnings.json'
+                warnings = read_json(warnings_path) if warnings_path.is_file() else []
+                warnings.append({
+                    'code': 'shopify_market_deferred_to_product_source',
+                    'message': '首页及 cart.js 未声明币种；延后由真实商品源与 market_evidence 确认 US/USD',
+                })
+                save_json(warnings_path, warnings)
             try:
                 samples = standard_run()
             except Exception as error:
@@ -961,9 +989,13 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
         raise
     finally:
         if 'client' in locals():
-            clear_cache = getattr(client, 'clear_cache', None)
-            if callable(clear_cache):
-                clear_cache()
-            elif hasattr(client, 'cache'):
-                client.cache.clear()
+            close = getattr(client, 'close', None)
+            if callable(close):
+                close()
+            else:
+                clear_cache = getattr(client, 'clear_cache', None)
+                if callable(clear_cache):
+                    clear_cache()
+                elif hasattr(client, 'cache'):
+                    client.cache.clear()
         gc.collect()

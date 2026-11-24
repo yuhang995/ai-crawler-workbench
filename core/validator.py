@@ -1,6 +1,7 @@
 """Validate artifacts and raw response content, never selector proofs or host hashes."""
 import csv
 import hashlib
+import re
 import sys
 import time
 from collections import Counter
@@ -17,7 +18,7 @@ from .shopify_fastpath import (listing_dom, money, handle, variant_images,
                                product_gallery, embedded_product_handles,
                                explicit_colorway_entries, single_product_colour, variant_external_url,
                                hydrogen_group_products, merged_options, product_categories,
-                               primary_collection)
+                               primary_collection, product_handle)
 
 
 def _allow_large_csv_fields():
@@ -68,9 +69,17 @@ def source_order(listing, root=None):
     if not pages:
         raise CrawlError('分类列表缺少页面证据')
     if evidence == 'products_feed_fallback':
-        scoped = any(key != 'page' for key in parse_qs(urlsplit(listing['url']).query))
+        # Attribution-only query parameters do not change collection membership.
+        # Keep this independent validator in step with the collector, while still
+        # rejecting real filters, tags and sort/search scopes.
+        tracking = re.compile(
+            r'^(?:utm_.+|gclid|dclid|fbclid|msclkid|ttclid|twclid|ref|source|'
+            r'campaign|campaignid|affiliate|affid|irclickid|abralink)$', re.I)
+        scoped = any(key != 'page' and not tracking.match(key)
+                     for key in parse_qs(urlsplit(listing['url']).query))
         warnings = {warning.get('code') for warning in listing.get('warnings', [])}
-        if scoped or 'listing_order_feed_fallback' not in warnings:
+        if scoped or not warnings.intersection({
+                'listing_order_feed_fallback', 'spa_feed_order_fallback'}):
             raise CrawlError('筛选目录或无警告记录不得使用 Feed 顺序兜底')
         expected = order
     elif evidence == 'embedded_handles':
@@ -113,6 +122,10 @@ def pointer(data, path):
 def verify_source_mapping(root, sample):
     """Check nonstandard normalized variants against unmodified JSON or embedded JSON."""
     mapping = sample['source_mapping']
+    if mapping.get('kind') == 'site_adapter':
+        from .adapter_runner import verify_source
+        verify_source(root, sample)
+        return
     file = (root / mapping['file']).resolve()
     if not _is_relative_to(file, (root / 'evidence').resolve()):
         raise CrawlError('源响应必须位于 evidence 目录')
@@ -154,6 +167,10 @@ def verify_source_mapping(root, sample):
             variants.append(pointer(read_json(variant_file), source.get('path', '')))
     else:
         variants = pointer(raw, mapping['variants_path'])
+        # Schema.org and some Next.js payloads represent a genuine single
+        # variant as one object instead of a one-element array.
+        if isinstance(variants, dict):
+            variants = [variants]
     if not isinstance(variants, list) or len(variants) != len(p['variants']):
         raise CrawlError('规范化变体数量与源响应不同')
     fields = mapping['variant_fields']
@@ -296,12 +313,11 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
         expected_urls = [url for url in expected_urls if url not in failed_urls]
     if not full:
         expected_urls = expected_urls[:3]
-    if (not expected_urls or (not full and len(expected_urls) != 3)
-            or [s['url'] for s in samples] != expected_urls):
-        raise CrawlError('必须是分类顺序下前 3 个不同商品')
+    if not expected_urls or [s['url'] for s in samples] != expected_urls:
+        raise CrawlError('必须是分类顺序下最多前 3 个不同商品')
     ids = [str(s['product']['id']) for s in samples]
     if len(set(ids)) != len(expected_urls):
-        raise CrawlError('样本不是三个不同商品')
+        raise CrawlError('样本包含重复父商品')
     if any(not isinstance(links, list) for links in detail.values()):
         raise CrawlError('detail_url.json 分类值必须是数组')
     for key, links in detail.items():
@@ -334,6 +350,10 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
         if listing.get('format') == 'custom':
             if [canonical(u) for u in links] != custom_front_order(listing):
                 raise CrawlError('非标商品顺序与页面不一致')
+            continue
+        if listing.get('format') == 'site_adapter':
+            from .adapter_runner import validate_listing
+            validate_listing(root, listing, links)
             continue
         if listing.get('format') == 'woocommerce-store-api-json':
             observed = []
@@ -392,9 +412,12 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
             continue
         feed_by_handle = {p['handle']: str(p['id']) for feed in listing['feeds'] for p in feed['products']}
         if listing.get('card_sources'):
-            from .shopify_fastpath import curated_card_handles
+            from .shopify_fastpath import curated_card_handles, observed_landing_card_handles
             first = listing['pages'][0]
-            declared = curated_card_handles(_page_html(first, root), first['url'])
+            if listing.get('card_source_kind') == 'observed_grid':
+                declared = observed_landing_card_handles(_page_html(first, root), first['url'])
+            else:
+                declared = curated_card_handles(_page_html(first, root), first['url'])
             cards = listing['card_sources']
             observed_cards = {}
             for source in cards:
@@ -511,7 +534,7 @@ def _validate_shopify_import(root, imported, samples):
             rows_by_handle.setdefault(row['Handle'], []).append(row)
         for sample in samples:
             product = sample['product']
-            group = rows_by_handle.get(product['handle'], [])
+            group = rows_by_handle.get(product_handle(product, sample.get('url', '')), [])
             categories = product_categories(sample, detail, listings) if detail else []
             expected_type = ','.join(categories)
             expected_collection = primary_collection(categories)

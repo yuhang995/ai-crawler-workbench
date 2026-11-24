@@ -265,8 +265,17 @@ def navigation_source(html, base, extra_documents=()):
         for node in soup.find_all(string=lambda value: isinstance(value, Comment)):
             node.extract()
         selected = _regions(soup, base)
-        if not selected and document != html:
-            selected = [soup]
+        if not selected:
+            # Some storefronts render their desktop mega menu in a custom
+            # element (or directly below body) instead of header/nav.  The
+            # document has already had footer/scripts/editorial media removed;
+            # only use this broad fallback when it contains a real catalogue
+            # set, so a lone campaign link cannot become the whole taxonomy.
+            catalogue_count = sum(
+                catalog_url(urljoin(base, anchor.get('href', '')), base)
+                for anchor in soup.select('a[href]'))
+            if document != html or catalogue_count >= 3:
+                selected = [soup]
         for region in selected:
             allowed_anchors = {id(anchor) for anchor in _anchors(region)}
             for anchor in region.select('a[href]'):

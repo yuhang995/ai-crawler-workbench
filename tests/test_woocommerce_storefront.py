@@ -1,9 +1,11 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
 from core.custom_site import identify_platform
+from core.custom_site import run_navigation
 from core.woocommerce_storefront import (
     collect_listing, fetch_product, navigation, product_market, verify_source,
 )
@@ -56,6 +58,46 @@ class WooCommerceStorefrontTests(unittest.TestCase):
             self.assertEqual(sample['product']['variants'][0]['price'], '15')
             self.assertEqual(sample['product']['variants'][0]['compare_at_price'], '50')
             verify_source(root, sample)
+            self.assertEqual(product_market(root, sample), ('US', 'USD'))
+
+    def test_empty_native_navigation_falls_back_to_simple_nav(self):
+        html = '''<html><body class="woocommerce"><header><nav>
+          <a href="/collections/shop">Shop</a></nav></header>
+          <script src="/wp-content/plugins/woocommerce/a.js"></script></body></html>'''
+        expected = {'Shop': BASE + 'collections/shop'}
+
+        def fallback(root, base, source):
+            from core.common import save_json
+            save_json(Path(root) / 'navigation_release.json', {'passed': True})
+            return expected, {'method': 'simple_nav'}, [source]
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.simple_nav.run_simple', side_effect=fallback) as simple:
+            categories, evidence, documents, release = run_navigation(
+                directory, BASE, html, 'woocommerce')
+        self.assertEqual(categories, expected)
+        self.assertEqual(evidence['method'], 'simple_nav')
+        self.assertTrue(release['passed'])
+        simple.assert_called_once()
+
+    def test_product_store_api_and_us_page_prove_market_when_cart_is_empty(self):
+        row = item(1, 'one')
+        class FallbackClient(Client):
+            def get(self, url, **kwargs):
+                return SimpleNamespace(url=url, text=(
+                    '<html lang="en-US"><meta property="og:locale" content="en_US">'
+                    '<script type="application/ld+json">'
+                    '{"@type":"Product","offers":{"priceCurrency":"USD"}}'
+                    '</script></html>'))
+            def json(self, url, **kwargs):
+                if url.endswith('/cart'):
+                    return {}
+                return [row]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'evidence').mkdir()
+            sample = fetch_product(FallbackClient([row]), row['permalink'], root / 'evidence')
+            self.assertEqual(sample['source_mapping']['market_mode'],
+                             'product_store_api_and_page')
             self.assertEqual(product_market(root, sample), ('US', 'USD'))
 
 

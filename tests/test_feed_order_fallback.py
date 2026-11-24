@@ -44,6 +44,31 @@ class DetailOriginTests(unittest.TestCase):
 
 
 class FeedOrderFallbackTests(unittest.TestCase):
+    def test_shopify_page_builder_landing_replays_finite_product_grid(self):
+        url = 'https://example.com/pages/sale#vitamins'
+        products = [product('a', 1), product('b', 2), product('c', 3)]
+        html = ('<main><section id="vitamins"><ul id="product-grid">'
+                + ''.join(f'<li><a href="/products/{p["handle"]}">{p["handle"]}</a></li>'
+                          for p in products)
+                + '</ul></section></main>')
+
+        class LandingClient:
+            def get(self, target, **_kwargs):
+                return Response(html, target)
+
+            def json(self, target, **_kwargs):
+                slug = target.rsplit('/products/', 1)[1].removesuffix('.json')
+                match = next(item for item in products if item['handle'] == slug)
+                return {'product': match}
+
+        listing = collect_listing(LandingClient(), url, full=True)
+        self.assertEqual(listing['format'], 'shopify_landing_grid')
+        self.assertEqual([p['handle'] for p in listing['products']], ['a', 'b', 'c'])
+        self.assertEqual(listing['urls'], [
+            'https://example.com/products/a', 'https://example.com/products/b',
+            'https://example.com/products/c'])
+        self.assertEqual(listing['card_source_kind'], 'observed_grid')
+
     def test_compact_full_store_evidence_retains_validator_identity_and_order(self):
         products=[dict(product('a',1),body_html='x'*10000),
                   dict(product('b',2),body_html='y'*10000),
@@ -130,10 +155,12 @@ class FeedOrderFallbackTests(unittest.TestCase):
 
     def test_unfiltered_browser_timeout_uses_feed_order_with_warning(self):
         products=[product('a',1),product('b',2),product('c',3)]
-        with patch('core.shopify_fastpath.rendered_listing_pages',side_effect=BrowserTimeout('grid timeout')):
+        with patch('core.shopify_fastpath.rendered_listing_pages',
+                   side_effect=AssertionError('SPA feed fallback must not launch browser')):
             result=collect_listing(Client('<main></main>',products),BASE)
         self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
-        self.assertEqual(result['warnings'][0]['code'],'listing_order_feed_fallback')
+        self.assertEqual(result['warnings'][0]['code'],'spa_feed_order_fallback')
+        self.assertEqual(result['warnings'][0]['reason'],'static_spa_grid_empty')
 
     def test_full_store_mode_uses_authoritative_feed_without_per_category_browser(self):
         products=[product('a',1),product('b',2),product('c',3)]
@@ -210,11 +237,13 @@ class FeedOrderFallbackTests(unittest.TestCase):
     def test_successful_render_without_cards_uses_unfiltered_feed_order(self):
         products=[product('a',1),product('b',2),product('c',3)]
         rendered=RenderedPages();rendered[BASE]='<div><product-grid></product-grid></div>'
-        with patch('core.shopify_fastpath.rendered_listing_pages',return_value=rendered):
+        with patch('core.shopify_fastpath.rendered_listing_pages',
+                   side_effect=AssertionError('browser should not run for an unfiltered SPA shell')):
             result=collect_listing(Client('<div></div>',products),BASE)
         self.assertEqual([p['handle'] for p in result['products']],['a','b','c'])
         self.assertEqual(result['order_evidence'],'products_feed_fallback')
-        self.assertEqual(result['warnings'][0]['reason'],'rendered_grid_empty')
+        self.assertEqual(result['warnings'][0]['code'],'spa_feed_order_fallback')
+        self.assertEqual(result['warnings'][0]['reason'],'static_spa_grid_empty')
 
     def test_unfiltered_opaque_load_more_uses_complete_feed_with_warning(self):
         products=[product('a',1),product('b',2),product('c',3)]
@@ -233,6 +262,23 @@ class FeedOrderFallbackTests(unittest.TestCase):
         with patch('core.shopify_fastpath.rendered_listing_pages',side_effect=BrowserTimeout('grid timeout')):
             with self.assertRaises(BrowserTimeout):
                 collect_listing(Client('<main></main>',products),BASE+'?filter.color=blue')
+
+    def test_tracking_query_does_not_turn_unfiltered_collection_into_filtered_scope(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        with patch('core.shopify_fastpath.rendered_listing_pages',
+                   side_effect=AssertionError('tracking-only URL must use verified feed')):
+            result=collect_listing(Client('<main></main>',products),
+                                   BASE+'?abralink=campaign')
+        self.assertEqual([p['handle'] for p in result['products']], ['a','b','c'])
+        self.assertEqual(result['order_evidence'], 'products_feed_fallback')
+
+    def test_validator_accepts_tracking_query_feed_fallback(self):
+        products=[product('a',1),product('b',2),product('c',3)]
+        with patch('core.shopify_fastpath.rendered_listing_pages',
+                   side_effect=AssertionError('tracking-only URL must use verified feed')):
+            result=collect_listing(Client('<main></main>',products),
+                                   BASE+'?abralink=campaign')
+        self.assertEqual(source_order(result), ['a','b','c'])
 
     def test_full_filtered_browser_timeout_downgrades_to_verified_feed(self):
         products=[product('a',1),product('b',2),product('c',3)]

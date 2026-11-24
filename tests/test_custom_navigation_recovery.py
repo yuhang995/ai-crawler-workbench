@@ -251,8 +251,11 @@ class CustomNavigationRecoveryTests(unittest.TestCase):
             self.assertFalse(json.loads((root / 'navigation_native_audit.json').read_text(encoding='utf-8'))['passed'])
             self.assertEqual(json.loads((root / 'navigation_repair.json').read_text(encoding='utf-8'))['status'], 'completed')
             self.assertEqual(release['status'], 'approved')
-            self.assertIn('NAVIGATION HTML', processes[0].communicate.call_args.args[0])
-            self.assertIn('data-collapsible="dog-panel"', processes[0].communicate.call_args.args[0])
+            prompt = processes[0].communicate.call_args.args[0]
+            self.assertIn('NAVIGATION OUTLINE', prompt)
+            self.assertIn('/dog/toys/type-0/', prompt)
+            self.assertNotIn('<header', prompt)
+            self.assertIn('[label] Dog', prompt)
 
     def test_incomplete_native_result_runs_recovery_for_all_twenty_three_links(self):
         expected = categories_for(23)

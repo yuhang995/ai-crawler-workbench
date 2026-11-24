@@ -55,6 +55,26 @@ class WorkbenchOperationsTests(unittest.TestCase):
                 with app.LOCK:
                     app.JOBS.clear()
 
+    def test_cancelled_jobs_immediately_release_submission_capacity(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                app, 'RUNS', Path(directory)), patch.object(app, 'execute'):
+            with app.LOCK:
+                app.JOBS.clear()
+                for index in range(24):
+                    app.JOBS[str(index)] = {'status': 'cancelled'}
+            server = app.LocalServer(('127.0.0.1', 0), app.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, created = self.post(server.server_port, '/api/jobs', {
+                    'site': 'https://replacement.example'})
+                self.assertEqual(status, 201)
+                self.assertEqual(created['status'], 'queued')
+            finally:
+                server.shutdown(); server.server_close(); thread.join(5)
+                with app.LOCK:
+                    app.JOBS.clear()
+
     def test_cleanup_keeps_active_and_recent_directories(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'RUNS', Path(directory)):
             root = Path(directory)
@@ -99,12 +119,37 @@ class WorkbenchOperationsTests(unittest.TestCase):
         self.assertNotIn('secret-two', encoded)
         self.assertIn('代理池', public['proxy_display'])
 
+    def test_proxy_pool_round_robin_is_per_task_not_per_hostname(self):
+        Client._proxy_pool_cursor.clear()
+        clients = [Client(proxy_pool=[P1, P2]) for _ in range(4)]
+        with patch('core.common.requests.Session', return_value=MagicMock()):
+            for index, client in enumerate(clients):
+                client._session(f'store-{index}.example')
+        self.assertEqual([client.proxy for client in clients], [P1, P2, P1, P2])
+
     def test_cancel_event_stops_client_before_network(self):
         cancelled = threading.Event(); cancelled.set()
         client = Client(cancel_event=cancelled)
         with patch('core.common.requests.Session') as session, self.assertRaises(TaskCancelled):
             client.get('https://example.com/')
         session.assert_not_called()
+
+    def test_client_close_releases_thread_sessions_and_recovery_state(self):
+        client = Client()
+        first, second = MagicMock(), MagicMock()
+        client.local.sessions = {'one.example': first, 'two.example': second}
+        client.browser_cookies.append({'name': 'session'})
+        client.browser_user_agents['one.example'] = 'UA'
+        client.browser_attempted.add('one.example')
+        client.recovery_attempted_domains.add('one.example')
+        client.close()
+        first.close.assert_called_once_with()
+        second.close.assert_called_once_with()
+        self.assertEqual(client.local.__dict__, {})
+        self.assertFalse(client.browser_cookies)
+        self.assertFalse(client.browser_user_agents)
+        self.assertFalse(client.browser_attempted)
+        self.assertFalse(client.recovery_attempted_domains)
 
     def test_frontend_exposes_operations_and_proxy_pool(self):
         root = Path(app.__file__).resolve().parent
@@ -114,6 +159,25 @@ class WorkbenchOperationsTests(unittest.TestCase):
         self.assertIn('name="use_proxy_pool"', html)
         self.assertIn('data-cancel', script)
         self.assertIn('/api/jobs/cleanup', script)
+
+    def test_terminal_snapshot_drops_large_category_and_report_payloads(self):
+        categories = {f'Category {i}': f'https://shop.example/collections/{i}'
+                      for i in range(500)}
+        job = {'id': 'done', 'site': 'https://shop.example',
+               'status': 'completed', 'progress': 100,
+               'categories': categories,
+               'events': [{'stage': 'navigation', 'categories': categories},
+                          {'stage': 'completed', 'report': {'blob': 'x' * 100_000}}]}
+        result = app.snapshot(job)
+        self.assertNotIn('categories', result)
+        self.assertEqual(result['category_count'], 500)
+        self.assertTrue(all('categories' not in event and 'report' not in event
+                            for event in result['events']))
+        self.assertLess(len(json.dumps(result)), 10_000)
+        app._compact_terminal_job(job)
+        self.assertNotIn('categories', job)
+        self.assertNotIn('report', job['events'][-1])
+        self.assertEqual(job['category_count'], 500)
 
 
 if __name__ == '__main__':

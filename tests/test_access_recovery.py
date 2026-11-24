@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from curl_cffi import requests
 
 from core.common import (AccessChallenge, Client, is_access_challenge_response,
                          manual_confirmation_ready, retry_after_seconds)
@@ -31,6 +32,14 @@ def response(status=200, text='<html><nav>Shop</nav></html>', headers=None):
 
 
 class AccessRecoveryTests(unittest.TestCase):
+    def test_redirect_without_location_returns_terminal_response(self):
+        redirected = response(status=302, headers={'content-type': 'text/html'})
+        client = Client()
+        session = MagicMock()
+        session.get.return_value = redirected
+        with patch.object(client, '_session', return_value=session), patch.object(client, 'pace'):
+            self.assertIs(client.get(BASE), redirected)
+
     def test_retry_after_delta_and_http_date_are_bounded(self):
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         self.assertEqual(retry_after_seconds('12', now), 12)
@@ -183,7 +192,8 @@ class AccessRecoveryTests(unittest.TestCase):
         with patch('core.common.requests.Session', return_value=session) as factory:
             actual = Client()._new_session('example.com')
         self.assertIs(actual, session)
-        factory.assert_called_once_with(impersonate='firefox')
+        self.assertEqual(factory.call_args.kwargs['impersonate'], 'firefox')
+        self.assertTrue(factory.call_args.kwargs['verify'].endswith('cacert.pem'))
 
     def test_transport_reset_rotates_browser_fingerprint(self):
         client = Client()
@@ -195,7 +205,26 @@ class AccessRecoveryTests(unittest.TestCase):
             actual = client._reset_session('example.com', rotate=True)
         self.assertIs(actual, replacement)
         previous.close.assert_called_once()
-        factory.assert_called_once_with(impersonate='chrome')
+        self.assertEqual(factory.call_args.kwargs['impersonate'], 'chrome')
+        self.assertTrue(factory.call_args.kwargs['verify'].endswith('cacert.pem'))
+
+    def test_missing_intermediate_certificate_uses_verified_browser_fallback(self):
+        client = Client()
+        session = MagicMock()
+        session.get.side_effect = requests.RequestsError(
+            'curl: (60) SSL certificate problem: unable to get local issuer certificate')
+        client.local.sessions = {'example.com': session}
+        client.local.session = session
+        recovered = MagicMock()
+        recovered.url = BASE
+        recovered.content = b'<html>store</html>'
+        recovered.text = '<html>store</html>'
+        recovered.headers = {'content-type': 'text/html'}
+        recovered.status_code = 200
+        with patch.object(client, '_browser_get_for_tls', return_value=recovered) as fallback:
+            actual = client.get(BASE)
+        self.assertIs(actual, recovered)
+        fallback.assert_called_once_with(BASE, None)
 
 
 if __name__ == '__main__':

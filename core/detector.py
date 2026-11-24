@@ -7,21 +7,105 @@ from urllib.parse import urljoin, urlsplit
 from .common import CrawlError, query
 
 
+# Market detection is a gate, so false positives are worse than missing a
+# weak hint. Never accept arbitrary three-letter tokens such as WIN/CUR/SHO.
+ISO_4217_CODES = frozenset({
+    'AED', 'ARS', 'AUD', 'BDT', 'BGN', 'BHD', 'BRL', 'CAD', 'CHF', 'CLP',
+    'CNY', 'COP', 'CZK', 'DKK', 'EGP', 'EUR', 'GBP', 'HKD', 'HUF', 'IDR',
+    'ILS', 'INR', 'ISK', 'JPY', 'KRW', 'KWD', 'MAD', 'MXN', 'MYR', 'NGN',
+    'NOK', 'NZD', 'PEN', 'PHP', 'PKR', 'PLN', 'QAR', 'RON', 'RSD', 'RUB',
+    'SAR', 'SEK', 'SGD', 'THB', 'TRY', 'TWD', 'UAH', 'USD', 'VND', 'ZAR',
+})
+
+# Market selectors must publish canonical uppercase ISO-style country codes.
+# Lowercase fragments such as JavaScript's ``at`` token are not market proof.
+ISO_3166_COUNTRIES = frozenset({
+    'AE', 'AR', 'AT', 'AU', 'BE', 'BG', 'BR', 'CA', 'CH', 'CL', 'CN', 'CO',
+    'CZ', 'DE', 'DK', 'EG', 'ES', 'FI', 'FR', 'GB', 'GR', 'HK', 'HU', 'ID',
+    'IE', 'IL', 'IN', 'IS', 'IT', 'JP', 'KR', 'KW', 'MA', 'MX', 'MY', 'NG',
+    'NL', 'NO', 'NZ', 'PE', 'PH', 'PK', 'PL', 'PT', 'QA', 'RO', 'RS', 'RU',
+    'SA', 'SE', 'SG', 'TH', 'TR', 'TW', 'UA', 'US', 'VN', 'ZA',
+})
+
+
+def _iso_currency(value):
+    value = str(value or '').strip().upper()
+    return value if value in ISO_4217_CODES else None
+
+
+def _iso_country(value):
+    value = str(value or '').strip()
+    return value if value in ISO_3166_COUNTRIES else None
+
+
 def observe_market(html):
     """Adapted from ai爬虫 2/market_policy.py: require observed country+currency."""
-    countries = set(re.findall(r'Shopify\.country\s*=\s*[\"\x27]([A-Z]{2})[\"\x27]', html))
-    currencies = set()
+    selected_countries = set(re.findall(
+        r'Shopify\.country\s*=\s*[\"\x27]([A-Z]{2})[\"\x27]', html))
+    fallback_countries = set()
+    selected_currencies = set()
+    fallback_currencies = set()
     for text in re.findall(r'Shopify\.currency\s*=\s*(\{[^;]+?\})', html):
         try:
-            currencies.add(json.loads(text)['active'])
+            value = _iso_currency(json.loads(text)['active'])
+            if value:
+                selected_currencies.add(value)
         except (ValueError, KeyError):
             pass
     from .html_parser import parse_soup as BeautifulSoup
     soup = BeautifulSoup(html, 'lxml')
+    # A canonical URL that is also published as the ``en-US`` alternate is
+    # explicit current-market evidence, unlike merely seeing US in a list of
+    # all supported locales.  Headless Shopify/Gatsby shells often expose no
+    # ``Shopify.country`` global but do publish this standard pair.
+    canonical = soup.select_one('link[rel="canonical"][href]')
+    if canonical:
+        canonical_url = str(canonical.get('href') or '').rstrip('/')
+        for alternate in soup.select('link[rel="alternate"][hreflang][href]'):
+            if (str(alternate.get('hreflang') or '').casefold() == 'en-us'
+                    and str(alternate.get('href') or '').rstrip('/') == canonical_url):
+                selected_countries.add('US')
+                break
     for node in soup.select('[data-current-country],select[name=country_code] option[selected]'):
-        countries.add(node.get('data-current-country') or node.get('value'))
+        value = _iso_country(node.get('data-current-country') or node.get('value'))
+        if value:
+            selected_countries.add(value)
     for node in soup.select('[data-current-currency],meta[property="og:price:currency"],meta[itemprop=priceCurrency]'):
-        currencies.add(node.get('data-current-currency') or node.get('content'))
+        value = _iso_currency(node.get('data-current-currency') or node.get('content'))
+        if value:
+            selected_currencies.add(value)
+    # Salesforce Commerce Cloud storefronts commonly expose the selected
+    # market in page data rather than attributes.  Read only explicit values;
+    # geolocation telemetry is not a selected storefront market (a US shop can
+    # legitimately report that the visitor IP is in another country).
+    selected_countries.update(re.findall(
+        r'["\'](?:pageCountry|CURRENT_COUNTRY)["\']?\s*[:=]\s*["\']([A-Z]{2})["\']',
+        html))
+    fallback_countries.update(re.findall(
+        r'["\']country_code["\']\s*[:=]\s*["\']([A-Z]{2})["\']', html))
+    # Explicit active/selected signals override generic JSON fields because a
+    # localisation bundle may enumerate every market the shop supports.
+    for value in re.findall(
+            r'["\'](?:cart_currency|CURRENT_CURRENCY|currentCurrency)["\']?'
+            r'\s*[:=]\s*["\']([A-Z]{3})["\']', html, re.I):
+        value = _iso_currency(value)
+        if value:
+            selected_currencies.add(value)
+    for value in re.findall(
+            r'["\'](?:currencyCode|currency_code|priceCurrency|currency)["\']'
+            r'\s*:\s*["\']([A-Z]{3})["\']', html, re.I):
+        value = _iso_currency(value)
+        if value:
+            fallback_currencies.add(value)
+    # Some older SFCC pages publish exactly ``currency=USD``. Keep only this
+    # narrow declaration and still require the ISO whitelist.
+    for value in re.findall(r'(?<![\w.])currency\s*=\s*([A-Z]{3})(?![\w])', html):
+        value = _iso_currency(value)
+        if value:
+            fallback_currencies.add(value)
+    locale = re.search(r'CQuotient\.locale\s*=\s*["\']([a-z]{2})[_-]([A-Z]{2})["\']', html)
+    if locale:
+        selected_countries.add(locale.group(2).upper())
     # Hydrogen v2 storefronts may expose the same React Router/devalue loader
     # through either the legacy React Router global or Remix's current global.
     # The parser supports both; do not skip its verified locale merely because
@@ -32,11 +116,23 @@ def observe_market(html):
         from .shopify_fastpath import hydrogen_market
         selected = hydrogen_market(html)
         if selected['country']:
-            countries.add(selected['country'])
+            selected_countries.add(selected['country'])
         if selected['currency']:
-            currencies.add(selected['currency'])
+            value = _iso_currency(selected['currency'])
+            if value:
+                selected_currencies.add(value)
+    countries = selected_countries or fallback_countries
+    currencies = selected_currencies or fallback_currencies
+    # ``$`` is ambiguous by itself, but on a canonically selected US page it
+    # is an unambiguous USD display signal.  This is deliberately applied only
+    # after the canonical/hreflang proof above and never from arbitrary text.
+    if selected_countries == {'US'} and not currencies:
+        visible = soup.get_text(' ', strip=True)
+        if re.search(r'(?<![A-Z])\$\s*\d', visible):
+            selected_currencies.add('USD')
+            currencies = selected_currencies
+    countries = {_iso_country(value) for value in countries}
     countries.discard(None)
-    currencies.discard(None)
     return {'countries': sorted(countries), 'currencies': sorted(currencies),
             'confirmed': countries == {'US'} and currencies == {'USD'}}
 
@@ -125,9 +221,44 @@ def detect(client, base, html, categories):
         graphql.append(urljoin(base, storefront['endpoint']))
     shopify = (not native_platform and
                (bool(valid) or bool(storefront['endpoint']) or any(m.lower() in html.lower() for m in SHOPIFY_MARKERS)))
+    # Some ordinary Shopify themes publish their finite catalogue as visible
+    # page-builder landings (``/pages/sale#vitamins``) rather than collection
+    # routes.  The navigation stage only emits these after proving a desktop
+    # Shop root and real PDP links; retain that deterministic Shopify route
+    # instead of misclassifying it as a generic custom site merely because
+    # there is no collection feed to probe.
+    page_catalog = bool(shopify and any(
+        re.fullmatch(r'/pages/[^/]+/?', urlsplit(str(value)).path, re.I)
+        and urlsplit(str(value)).fragment
+        for value in categories.values()) and len(set(re.findall(
+            r'''(?:href=["']|https?://[^/"']+)(?:https?://[^/"']+)?/products/([a-z0-9][a-z0-9_-]*)''',
+            html, re.I))) >= 3)
+    # A transient collection-feed failure must not demote an otherwise
+    # ordinary Shopify storefront to the generic custom-site path.  Require
+    # three independent facts from the public page: a Shopify fingerprint,
+    # an observed collection category selected by navigation, and at least
+    # three real PDP hrefs.  This is intentionally structural, never a domain
+    # exception.
+    product_handles = set(re.findall(
+        r'''href=["'][^"']*/products/([a-z0-9][a-z0-9_-]*)''', html, re.I))
+    verified_standard_theme = bool(shopify and candidates and len(product_handles) >= 3)
     # A search widget alone does not prove the collection grid is search-app driven.
     hydrogen = shopify and (hydrogen_marker or headless_shopify)
     market = observe_market(html)
+    # A branded Hydrogen shell can omit every Shopify market global while its
+    # same-origin cart endpoint still exposes the selected currency. Probe the
+    # public cart for every confirmed Shopify storefront, not only Liquid
+    # themes. A 404/challenge remains non-evidence and is ignored here.
+    if (shopify and not market['confirmed']
+            and (not headless_shopify or not shopify_origin)):
+        try:
+            cart = client.json(urljoin(base, '/cart.js'))
+            if isinstance(cart, dict) and _iso_currency(cart.get('currency')) == 'USD':
+                market = {'countries': ['US'], 'currencies': ['USD'],
+                          'confirmed': True,
+                          'source': 'shopify_cart_after_us_localization'}
+        except (CrawlError, ValueError):
+            pass
     if shopify_origin and headless_shopify and not market['confirmed']:
         try:
             cart = client.get(shopify_origin + '/cart.js').json()
@@ -141,7 +272,8 @@ def detect(client, base, html, categories):
                           'source': 'shopify_cart_after_us_localization'}
         except (CrawlError, ValueError):
             pass
-    mode = ('standard_shopify' if valid else 'hydrogen_shopify' if hydrogen
+    mode = ('standard_shopify' if valid or page_catalog or verified_standard_theme
+            else 'hydrogen_shopify' if hydrogen
             else 'search_app_shopify' if shopify and provider
             else 'graphql_shopify' if shopify and graphql else 'custom_site')
     return {'mode': mode, 'shopify': shopify, 'provider': provider,

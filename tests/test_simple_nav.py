@@ -5,13 +5,102 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from core.simple_nav import (slim_html_for_ai, clean_categories, publish_simple,
-                             extract_url_json_with_ai, run_simple)
+                             extract_url_json_with_ai, run_simple,
+                             _rendered_body_category_digest)
 from core.common import Client, CrawlError, read_json
 
 BASE = 'https://example.com/'
 
 
 class SimpleNavTests(unittest.TestCase):
+    def test_singular_collection_route_is_a_real_category(self):
+        from core.simple_nav import legal_url
+        self.assertTrue(legal_url('https://example.com/collection/all-products',
+                                  'https://example.com/'))
+
+    def test_nested_product_range_is_category_but_pdp_is_not(self):
+        from core.simple_nav import legal_url
+        self.assertTrue(legal_url('https://example.com/products/play-kits/baby',
+                                  'https://example.com/'))
+        self.assertFalse(legal_url('https://example.com/products/play-kits',
+                                   'https://example.com/'))
+
+    def test_shop_labelled_page_landings_form_verified_catalog(self):
+        from core.simple_nav import _shopify_catalog_landing_navigation
+        html = '''<script>Shopify.currency={"active":"USD"}</script>
+          <header><nav><a href="/pages/paper">Shop Paper</a>
+          <a href="/pages/towels">Shop Towels</a>
+          <a href="/pages/about">About</a></nav></header>'''
+        self.assertEqual(_shopify_catalog_landing_navigation(html, 'https://example.com/'), {
+            'Shop Paper': 'https://example.com/pages/paper',
+            'Shop Towels': 'https://example.com/pages/towels'})
+    def test_empty_static_navigation_uses_one_rendered_dom_pass(self):
+        static = '<html><header><button>Shop</button></header><main></main></html>'
+        rendered = '''<html><header><nav><a href="/collections/all">Shop All</a>
+            <a href="/collections/new">New</a></nav></header></html>'''
+        expected = {'Shop All': BASE + 'collections/all', 'New': BASE + 'collections/new'}
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.simple_nav.rendered_html', return_value=[rendered]) as render, patch(
+                'core.simple_nav.extract_url_json_with_ai', return_value=expected) as extract:
+            categories, _, _ = run_simple(directory, BASE, static)
+        self.assertEqual(categories, expected)
+        render.assert_called_once()
+        data = extract.call_args.args[2]
+        self.assertEqual(set(data['source_navigation_urls']), set(expected.values()))
+
+    def test_thin_static_navigation_also_uses_rendered_dom_pass(self):
+        static = '''<header><nav><a href="/collections/one">One</a>
+          <a href="/collections/two">Two</a></nav></header>'''
+        rendered = '''<header><nav><a href="/collections/one">One</a>
+          <a href="/collections/two">Two</a><a href="/collections/three">Three</a>
+          <a href="/collections/four">Four</a></nav></header>'''
+        expected = {'One': BASE + 'collections/one', 'Two': BASE + 'collections/two',
+                    'Three': BASE + 'collections/three', 'Four': BASE + 'collections/four'}
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.simple_nav.rendered_html', return_value=[rendered]) as render, patch(
+                'core.simple_nav.extract_url_json_with_ai', return_value=expected) as extract:
+            categories, _, _ = run_simple(directory, BASE, static)
+        self.assertEqual(categories, expected)
+        render.assert_called_once()
+        self.assertEqual(len(extract.call_args.args[2]['source_navigation_urls']), 4)
+
+    def test_rendered_body_fallback_keeps_main_and_footer_categories_only(self):
+        html = '''<body><div id="app"><a href="/collections/new">New</a></div>
+          <main><a href="/collections/shoes">Shoes</a><a href="/products/p1">P1</a></main>
+          <footer><a href="/collections/sale">Sale</a><a href="/pages/about">About</a></footer></body>'''
+        lines, urls = _rendered_body_category_digest(html, BASE)
+        self.assertEqual(urls, [BASE + 'collections/new', BASE + 'collections/shoes',
+                                BASE + 'collections/sale'])
+        self.assertTrue(any('[home] Sale' in line for line in lines))
+
+    def test_single_product_store_does_not_launch_render_fallback(self):
+        html = '<header><nav><a href="/products/only-product">Shop</a></nav></header>'
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'core.simple_nav.rendered_html') as render:
+            categories, _, _ = run_simple(directory, BASE, html)
+        self.assertEqual(categories, {'Shop': BASE + 'products/only-product'})
+        render.assert_not_called()
+
+    def test_shopify_page_builder_catalog_landings_are_deterministic(self):
+        html = '''<script>Shopify.currency = {"active":"USD"};</script>
+        <header><nav class="desktop-nav small-hide medium-hide"><a href="/pages/sale">Shop</a>
+        <a href="/blogs/news">Learn</a></nav><header-drawer>
+        <a href="/pages/sale#vitamins">Daily Vitamins</a>
+        <a href="/pages/shop-by-age#kids">Kids (4-12)</a>
+        <a href="/pages/about">About Us</a></header-drawer></header>
+        <main><a href="/products/one">One</a><a href="/products/two">Two</a>
+        <a href="/products/three">Three</a></main>'''
+        with tempfile.TemporaryDirectory() as directory:
+            categories, evidence, _ = run_simple(directory, BASE, html)
+            self.assertEqual(categories, {
+                'Shop': BASE + 'pages/sale',
+                'Shop,Shop Daily Vitamins': BASE + 'pages/sale#vitamins',
+                'Shop,Shop Kids (4-12)': BASE + 'pages/shop-by-age#kids',
+            })
+            self.assertEqual(evidence['source'], 'shopify_catalog_landing_navigation')
+            self.assertFalse(any('/products/' in url or '/pages/about' in url
+                                 for url in categories.values()))
+
     def test_single_product_primary_shop_entry_is_deterministic_directory(self):
         html = '''<header><nav><a href="/products/variety-pack">Shop All</a>
         <a href="/pages/stores">Find in Store</a></nav></header>

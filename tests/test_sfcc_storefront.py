@@ -93,6 +93,55 @@ def html_manifest():
 
 
 class SfccStorefrontTests(unittest.TestCase):
+    def test_sitegenesis_embedded_dimensions_replays_real_variants(self):
+        dimensions = {
+            'attributes': ['size', 'width'],
+            'inventory': [
+                {'id': 'upc-1', 'quantity': 4, 'status': 'IN_STOCK'},
+                {'id': 'upc-2', 'quantity': 0, 'status': 'NOT_AVAILABLE'}],
+            'variations': {
+                'upc-1': {'isAvailable': True, 'color': 'red', 'size': '8',
+                          'sizeDisplayValue': '8', 'width': 'M', 'widthDisplayValue': 'M'},
+                'upc-2': {'isAvailable': False, 'color': 'blue', 'size': '9',
+                          'sizeDisplayValue': '9', 'width': 'M', 'widthDisplayValue': 'M'}},
+            'color': {'displayName': 'Color', 'values': [
+                {'value': 'red', 'displayValue': 'Red'},
+                {'value': 'blue', 'displayValue': 'Blue'}]},
+            'size': {'displayName': 'Size'}, 'width': {'displayName': 'Width'}}
+        html = '''<html><head>
+          <link rel="canonical" href="https://store.example/shoe/master.html">
+          <meta property="og:site_name" content="Example Brand">
+          <meta name="description" content="Running shoe">
+        </head><body><span class="product-name-v2" data-name="Speed Shoe"></span>
+          <div id="productDimensionsAndVariations-master">%s</div>
+          <div class="product-variations">
+            <a class="swatchanchor" value="red" data-lgimg='%s'></a>
+            <a class="swatchanchor" value="blue" data-lgimg='%s'></a>
+          </div><script>dataLayer.push(%s);</script></body></html>''' % (
+              json.dumps(dimensions),
+              escape(json.dumps({'hires': BASE + 'red.jpg'}), quote=True),
+              escape(json.dumps({'hires': BASE + 'blue.jpg'}), quote=True),
+              json.dumps({'product_master_id': 'master', 'product_name': 'Speed Shoe',
+                          'product_price': '180.00', 'currency_code': 'USD'}))
+        manifest = {'format': 'sitegenesis_dimensions',
+                    'url': 'https://store.example/shoe/master.html',
+                    'endpoint': 'https://store.example/shoe/master.html',
+                    'html': html, 'responses': {}}
+        product = _normalize(manifest)
+        self.assertEqual([v['id'] for v in product['variants']], ['upc-1', 'upc-2'])
+        self.assertEqual(product['variants'][0]['option1'], 'Red')
+        self.assertEqual(product['variants'][0]['option2'], '8')
+        self.assertTrue(product['variants'][0]['available'])
+        self.assertFalse(product['variants'][1]['available'])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save_json(root / 'evidence/dimensions.json', manifest)
+            sample = {'url': manifest['url'], 'product': product,
+                      'source_mapping': {'kind': 'sfcc_storefront',
+                                         'file': 'evidence/dimensions.json'}}
+            verify_source_mapping(root, sample)
+            self.assertEqual(product_market(root, sample), ('US', 'USD'))
+
     def test_react_customer_listing_paginates_in_api_order(self):
         def card(master, sku):
             return {'id': f'{master}-{sku}', 'masterId': master, 'name': 'Item ' + master,
@@ -240,6 +289,46 @@ class SfccStorefrontTests(unittest.TestCase):
         with self.assertRaises(CrawlError):
             validate_listing(listing, listing['urls'])
 
+    def test_repeated_or_non_advancing_next_is_natural_terminal(self):
+        def tile(pid):
+            return ('<div class="product-tile" data-pid="' + pid + '">'
+                    '<a class="name-link" href="/' + pid + '.html">' + pid + '</a></div>')
+
+        first = tile('1') + '<button class="more" data-url="/next"></button>'
+        repeated = tile('1') + '<button class="more" data-url="/next"></button>'
+        client = Mock()
+        client.get.side_effect = [
+            SimpleNamespace(url=BASE + 'category', text=first),
+            SimpleNamespace(url=BASE + 'next', text=repeated),
+        ]
+        listing = collect_listing(client, BASE + 'category')
+        self.assertEqual(listing['urls'], [BASE + '1.html'])
+        self.assertEqual(listing['terminal_reason'], 'sfcc_no_new_products_terminal')
+        self.assertEqual(listing['warnings'][0]['code'], 'sfcc_no_new_products_terminal')
+        validate_listing(listing, listing['urls'])
+
+    def test_paging_validation_accepts_equivalent_percent_encoding(self):
+        first = ('<div class="product-tile" data-pid="1">'
+                 '<a class="name-link" href="/1.html">One</a></div>'
+                 '<button class="more" data-url="/next?pmin=0%2e01&amp;start=1"></button>')
+        last = ('<div class="product-tile" data-pid="2">'
+                '<a class="name-link" href="/2.html">Two</a></div>')
+        links = [BASE + '1.html', BASE + '2.html']
+        listing = {'complete': True, 'urls': links, 'terminal_reason': 'no_next_url',
+                   'pages': [
+                       {'url': BASE + 'category', 'html': first},
+                       {'url': BASE + 'next?pmin=0.01&start=1', 'html': last}]}
+        validate_listing(listing, links)
+
+    def test_unproven_terminal_next_requests_adapter_repair(self):
+        html = ('<div class="product-tile" data-pid="1">'
+                '<a class="name-link" href="/1.html">One</a></div>'
+                '<button class="more" data-url="/next"></button>')
+        listing = {'complete': True, 'urls': [BASE + '1.html'], 'pages': [
+            {'url': BASE + 'category', 'html': html}], 'terminal_reason': 'no_next_url'}
+        with self.assertRaises(AdapterRequired):
+            validate_listing(listing, listing['urls'])
+
     def test_gift_card_parent_label_keeps_real_gift_categories(self):
         html = '''<nav><ul class="top-level-container"><li><button>Gifts &amp; E-Gift Cards</button>
           <ul><li><a href="/gifts/all/">Shop All</a></li><li><a href="/gifts/for-her/">Gifts For Her</a></li>
@@ -384,6 +473,32 @@ class SfccStorefrontTests(unittest.TestCase):
         del source['responses'][BLUE_LARGE]
         with self.assertRaises(CrawlError):
             _normalize(source)
+
+    def test_missing_independent_sku_price_requests_adapter_repair(self):
+        source = manifest()
+        source['responses'][BLUE_LARGE]['product']['price']['sales'] = None
+        with self.assertRaises(AdapterRequired):
+            _variation_tree(ROOT, source['responses'])
+
+    def test_variation_http_500_requests_adapter_repair(self):
+        client = Mock()
+        client.get.return_value = Mock(url=BASE + 'product.html',
+            text='<a href="' + ENDPOINT + '?pid=master">variation</a>')
+        client.json.side_effect = CrawlError('请求失败: HTTP Error 500:')
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(AdapterRequired):
+            fetch_product(client, BASE + 'product.html', Path(directory))
+
+    def test_source_identity_structure_mismatch_requests_adapter_repair(self):
+        source = manifest()
+        product = _normalize(source)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'evidence').mkdir()
+            save_json(root / 'evidence/source.json', source)
+            sample = {'url': BASE + 'different-product.html', 'product': product,
+                      'source_mapping': {'file': 'evidence/source.json'}}
+            with self.assertRaises(AdapterRequired):
+                verify_source(root, sample)
 
     def test_non_us_response_is_rejected(self):
         source = manifest()

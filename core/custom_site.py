@@ -177,7 +177,16 @@ def run_navigation(root, base: str, html: str, platform: str, client=None, selec
         save_json(root / 'navigation_native_audit.json', audit)
         if not audit['passed']:
             raise AdapterRequired('原生菜单覆盖不足，需要按完整源结构恢复')
-    except (AdapterRequired, ValueError, TypeError, AttributeError, KeyError) as error:
+    except AdapterRequired as error:
+        if platform == 'woocommerce':
+            from .simple_nav import run_simple
+            categories, evidence, documents = run_simple(root, base, html)
+            release = read_json(root / 'navigation_release.json')
+            return categories, evidence, documents, release
+        documents = [p.read_text(encoding='utf-8') for p in (root / 'evidence').glob('home-menu-*.html')]
+        categories = recover_navigation(root, base, html, error, documents)
+        scope = 'source_navigation_ai_recovery'
+    except (ValueError, TypeError, AttributeError, KeyError) as error:
         documents = [p.read_text(encoding='utf-8') for p in (root / 'evidence').glob('home-menu-*.html')]
         categories = recover_navigation(root, base, html, error, documents)
         scope = 'source_navigation_ai_recovery'
@@ -200,12 +209,14 @@ def _product_urls(fragment: str, page_url: str) -> list[str]:
     anchors = soup.select('a.b-product_tile-link[data-pid][href]')
     if not anchors:
         scope = soup.find('main') or soup
-        anchors = scope.select('li[class*="Tile"] > a[href],a[class*="ProductTile"][href]')
+        anchors = scope.select(
+            '.product-tile a.thumb-link[href],.product-tile a.name-link[href],'
+            'li[class*="Tile"] > a[href],a[class*="ProductTile"][href]')
     for anchor in anchors:
         target = urljoin(page_url, anchor.get("href", ""))
         path = urlsplit(target).path
         if (urlsplit(target).hostname == urlsplit(page_url).hostname
-                and re.search(r'/[^/]+/\d+\.html$', path, re.I)
+                and re.search(r'/[^/]+/[A-Za-z0-9_-]+\.html$', path, re.I)
                 and not re.search(r'/expert-advice/|/who-we-are/', path, re.I)
                 and target not in result):
             result.append(target)
@@ -267,12 +278,34 @@ def _rendered_demandware_product(url: str) -> tuple[str, str]:
             browser.close()
 
 
+def _demandware_route(html: str, base: str) -> tuple[str, str]:
+    """Return the exact SFCC site id and locale declared by this storefront.
+
+    SFCC installations choose their own site id and may use ``default`` rather
+    than ``en_US``.  The public document declares both in analytics/action or
+    static asset URLs; never assume ``Sites-US-Site/en_US``.
+    """
+    routes = re.findall(
+        r'/on/demandware\.store/(Sites-[A-Za-z0-9_.-]+-Site)/([A-Za-z_\-]+)/',
+        html, re.I)
+    if routes:
+        return routes[0]
+    static = re.search(
+        r'/on/demandware\.static/(Sites-[A-Za-z0-9_.-]+-Site)/', html, re.I)
+    locale = re.search(r'CQuotient\.locale\s*=\s*["\']([^"\']+)', html)
+    if static:
+        return static.group(1), locale.group(1) if locale else 'default'
+    raise AdapterRequired('Demandware 页面未声明可验证的 siteId/locale 路由')
+
+
 def demandware_listing(client, url: str) -> dict:
     from . import sfcc_storefront
     if sfcc_storefront.supports(url):
         return sfcc_storefront.collect_listing(client, url)
     started = time.perf_counter()
     response = client.get(url, timeout=45)
+    if sfcc_storefront.supports(response.url, response.text):
+        return sfcc_storefront.collect_listing(client, response.url)
     pages = [{"url": response.url, "html": response.text}]
     urls = _product_urls(response.text, response.url)
     match = re.search(r"cq_params\.categoryId\s*=\s*['\"](.*?)['\"]", response.text)
@@ -289,7 +322,10 @@ def demandware_listing(client, url: str) -> dict:
             urls = rendered_urls
     else:
         cgid, start, size = match.group(1), len(urls), 24
-        endpoint = urljoin(response.url, "/on/demandware.store/Sites-US-Site/en_US/Search-UpdateGrid")
+        site_id, locale = _demandware_route(response.text, response.url)
+        endpoint = urljoin(
+            response.url,
+            f"/on/demandware.store/{site_id}/{locale}/Search-UpdateGrid")
         for _ in range(100):
             page_url = query(endpoint, cgid=cgid, start=start, sz=size, ajax="true")
             page = client.get(page_url, timeout=45)
@@ -354,9 +390,22 @@ def _pointer_value(data, path: str):
 
 def demandware_product(client, url: str, evidence: Path) -> dict:
     from . import sfcc_storefront
+    def variation_json(target):
+        try:
+            return client.json(target)
+        except CrawlError as error:
+            if re.search(r'(?:接口|响应).*(?:未返回|不是).*JSON|JSON.*(?:不可用|无效)',
+                         str(error), re.I):
+                raise AdapterRequired('Demandware/SFCC variation 接口未返回 JSON') from error
+            if (re.search(r'HTTP (?:Error )?5\d\d\b', str(error), re.I)
+                    and not re.search(r'HTTP (?:Error )?(?:403|429)\b', str(error), re.I)):
+                raise AdapterRequired('Demandware/SFCC variation 接口服务端结构异常') from error
+            raise
     if sfcc_storefront.supports(url):
         return sfcc_storefront.fetch_product(client, url, evidence)
     page = client.get(url, timeout=45)
+    if sfcc_storefront.supports(page.url, page.text):
+        return sfcc_storefront.fetch_product(client, page.url, evidence)
     links = _variation_links(page.text, page.url)
     if not links:
         if sfcc_storefront.is_client_rendered_shell(page.text):
@@ -364,7 +413,7 @@ def demandware_product(client, url: str, evidence: Path) -> dict:
         rendered_url, rendered_html = _rendered_demandware_product(page.url)
         separator = '&' if '?' in rendered_url else '?'
         customer_url = rendered_url + separator + 'customer=true'
-        customer = client.json(customer_url)
+        customer = variation_json(customer_url)
         manifest = {'format': 'react_customer_json', 'url': rendered_url,
                     'customer_url': customer_url, 'customer': customer,
                     'rendered_html': rendered_html, 'raw_html': page.text}
@@ -378,7 +427,7 @@ def demandware_product(client, url: str, evidence: Path) -> dict:
                 'source_mapping': {'kind': 'sfcc_storefront',
                                    'file': 'evidence/' + name}}
     base_endpoint = links[0]
-    base_raw = client.json(base_endpoint)
+    base_raw = variation_json(base_endpoint)
     base_product = base_raw.get("product", {})
     if not base_product.get("id") or not base_product.get("productName"):
         raise CrawlError("Demandware 商品基础响应缺少身份")
@@ -408,7 +457,7 @@ def demandware_product(client, url: str, evidence: Path) -> dict:
             if endpoint in visited:
                 continue
             visited.add(endpoint)
-            queue.append(client.json(endpoint))
+            queue.append(variation_json(endpoint))
         if len(visited) >= 250:
             raise CrawlError("Demandware 变体达到 250 上限，需要独立完整性核验")
 
@@ -719,8 +768,9 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
                              "status": "unverifiable_listing", "error": str(error)})
             save_json(root / 'sample_attempts.json', attempts)
             save_json(root / 'candidate_listings.json', by_url)
-            if (isinstance(error, AdapterRequired)
-                    and str(error).startswith('Demandware/SFCC 客户端渲染页面')):
+            # SFCC structural drift belongs to the bounded site_adapter repair
+            # loop. Transport/access failures remain CrawlError and fail closed.
+            if isinstance(error, AdapterRequired) and platform == 'demandware':
                 raise
             if all_categories:
                 raise

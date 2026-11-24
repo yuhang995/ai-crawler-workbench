@@ -13,6 +13,7 @@ from core.pipeline import run_job
 from core.simple_nav import publish_simple
 from core.validator import validate
 from tests.test_core import BASE, fixture, product
+from test_ai_repair import ADAPTER_SOURCE, AdapterClient
 
 
 HOME = '<header><a href="/collections/shop">Shop</a></header>'
@@ -62,6 +63,40 @@ def pipeline_dependencies(stack, error):
 
 
 class PipelineAIRepairTests(unittest.TestCase):
+    def test_site_adapter_repair_is_packaged_with_independent_runner(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            native = pipeline_dependencies(stack, AdapterRequired('商品网格结构需要适配'))
+
+            def repair_with_adapter(work, reason):
+                from core.adapter_runner import run_adapter
+                work = Path(work)
+                (work / 'site_adapter.py').write_text(ADAPTER_SOURCE, encoding='utf-8')
+                wrapper = ('from core.adapter_runner import main\n'
+                           'if __name__ == "__main__":\n    main()\n')
+                (work / 'get_detail_url.py').write_text(wrapper, encoding='utf-8')
+                (work / 'crawl_products.py').write_text(wrapper, encoding='utf-8')
+                (work / '3.ShopifyCrawl_sort.py').write_text(wrapper, encoding='utf-8')
+                save_json(work / 'ai_repair.json', {
+                    'status': 'completed', 'invocations': 1, 'reason': reason})
+                return run_adapter(work, client=AdapterClient())
+
+            repair = stack.enter_context(patch(
+                'core.ai_repair.repair_sample', side_effect=repair_with_adapter))
+            report = run_job(BASE, root)
+
+            native.assert_called_once()
+            repair.assert_called_once()
+            self.assertEqual(report['status'], 'completed')
+            self.assertEqual(report['validation']['products'], 3)
+            self.assertTrue((root / 'site_adapter.py').is_file())
+            with zipfile.ZipFile(root / 'crawler.zip') as archive:
+                names = set(archive.namelist())
+                self.assertIn('site_adapter.py', names)
+                self.assertIn('core/adapter_runner.py', names)
+                self.assertIn('get_detail_url.py', names)
+                self.assertIn('3.ShopifyCrawl_sort.py', names)
+
     def test_hydrogen_structural_failure_uses_controlled_repair_context(self):
         detection = {
             'mode': 'hydrogen_shopify', 'custom_platform': '',
