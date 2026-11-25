@@ -293,6 +293,36 @@ def validate_navigation(categories, documents, base, evidence=None):
         raise CrawlError('目录遗漏当前菜单或首页分类')
 
 
+def image_quality(samples):
+    warnings = []
+    bound = total = 0
+    first_image_owners = {}
+    for sample in samples:
+        product = sample['product']
+        variants = product.get('variants', [])
+        gallery = product_gallery(product)
+        if gallery:
+            owner = first_image_owners.setdefault(gallery[0], str(product['id']))
+            if owner != str(product['id']):
+                warnings.append({'code': 'shared_product_first_image',
+                                 'url': sample['url'], 'message': '不同父商品共用首图'})
+        product_bound = sum(bool(variant_images(product, variant)) for variant in variants)
+        bound += product_bound
+        total += len(variants)
+        for index, option in enumerate(product.get('options', []), 1):
+            name = option.get('name', '') if isinstance(option, dict) else str(option)
+            values = {v.get(f'option{index}') for v in variants} - {None, ''}
+            if (len(values) > 1 and not product_bound and len(gallery) > 1
+                    and re.search(r'color|colour|style|pattern|finish|颜色|款式', name, re.I)):
+                warnings.append({'code': 'visual_variants_without_images',
+                                 'url': sample['url'], 'option': name,
+                                 'variants': len(variants),
+                                 'message': '视觉变体有多张商品图，但没有可验证的变体图绑定'})
+                break
+    return {'products_checked': len(samples), 'variants_checked': total,
+            'variants_with_bound_images': bound, 'warnings': warnings}
+
+
 def validate_samples(detail, samples, listings, rows, full=False, root=None):
     from .custom_site import ordered_product_urls
     expected_urls = ordered_product_urls(detail, listings)
@@ -458,6 +488,7 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
             raise CrawlError('商品列表与前端顺序/范围不符: ' + key)
     expected = {}
     product_checks = {}
+    first_image_owners = {}
     for sample in samples:
         p, source = sample['product'], sample['source']
         if (not sample.get('source_mapping') and handle(sample['url']) != p['handle']) or not p.get('title'):
@@ -470,6 +501,10 @@ def validate_samples(detail, samples, listings, rows, full=False, root=None):
         if not imgs or any(urlsplit(u).scheme not in ('http', 'https')
                            or not urlsplit(u).netloc for u in imgs):
             raise CrawlError('图片 URL 无效')
+        if not full:
+            owner = first_image_owners.setdefault(imgs[0], str(p['id']))
+            if owner != str(p['id']):
+                raise CrawlError('不同父商品共用同一首图，请核对商品画廊')
         categories = (','.join(product_categories(sample, detail, listings))
                       if source_adapter(sample.get('source_mapping', {}).get('kind')) else None)
         product_checks[str(p['id'])] = {
@@ -765,5 +800,6 @@ def validate(root):
     result.update({'passed': True, 'categories': len(categories), 'sampled_categories': len(detail),
                    'seconds': round(time.perf_counter() - start, 4)})
     result.update(import_metrics)
+    result['image_quality'] = image_quality(samples)
     save_json(root / 'validation.json', result)
     return result

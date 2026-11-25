@@ -33,6 +33,14 @@ class UploadedCategoryFileTests(unittest.TestCase):
             with self.subTest(supplied=supplied), self.assertRaises(ValueError):
                 validate_uploaded_categories(supplied, BASE)
 
+    def test_accepts_visible_product_model_as_third_level_leaf(self):
+        supplied = {
+            'Products': BASE + 'shop',
+            'Products,Products Personal Blending': BASE + 'shop/personal',
+            'Products,Products Personal Blending,Products Personal Blending Ion': BASE + 'products/ion',
+        }
+        self.assertEqual(validate_uploaded_categories(supplied, BASE), supplied)
+
     def test_api_accepts_file_map_without_exposing_contents_in_snapshot(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'RUNS', Path(directory)):
             with app.LOCK:

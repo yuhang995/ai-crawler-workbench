@@ -28,7 +28,7 @@ class WorkflowTests(unittest.TestCase):
   original_product = product
   def transformed_product(index):
    result = original_product(index)
-   result['images'] = [{'src': 'https://cdn.example.com/f_auto,q_auto,w_1500/product.jpg'}]
+   result['images'] = [{'src': f'https://cdn.example.com/f_auto,q_auto,w_1500/product-{index}.jpg'}]
    return result
   with tempfile.TemporaryDirectory() as directory, patch('core.pipeline.Client', FakeClient), patch('test_workflow.product', side_effect=transformed_product):
    report = run_job(BASE, directory, navigation_mode='deterministic')
@@ -36,7 +36,7 @@ class WorkflowTests(unittest.TestCase):
    from core.validator import validate
    path = Path(directory) / 'result.csv'
    content = path.read_text(encoding='utf-8-sig')
-   path.write_text(content.replace('w_1500/product.jpg', 'w_100/product.jpg'), encoding='utf-8-sig')
+   path.write_text(content.replace('w_1500/product-', 'w_100/product-'), encoding='utf-8-sig')
    with self.assertRaises(CrawlError):
     validate(Path(directory))
 
@@ -116,7 +116,7 @@ class WorkflowTests(unittest.TestCase):
  def test_custom_raw_mapping(self):
   with tempfile.TemporaryDirectory() as d:
    root=Path(d);p=product(1)
-   raw={'data':{'id':1,'name':p['title'],'skus':[{'sku':10,'price':'12.50','was':'20.00','color':'Red','size':'M'}],'images':[{'url':'https://cdn.example.com/red.jpg'}]}}
+   raw={'data':{'id':1,'name':p['title'],'skus':[{'sku':10,'price':'12.50','was':'20.00','color':'Red','size':'M'}],'images':[{'url':p['images'][0]['src']}]}}
    save_json(root/'evidence/raw.json',raw)
    s={'url':BASE+'/item1','product':p,'source_mapping':{'file':'evidence/raw.json','product_fields':{'id':'/data/id','title':'/data/name'},'variants_path':'/data/skus','variant_fields':{'id':'/sku','price':'/price','compare_at_price':'/was','option1':'/color','option2':'/size'},'image_paths':['/data/images/0/url']}}
    verify_source_mapping(root,s)

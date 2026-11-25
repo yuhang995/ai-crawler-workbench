@@ -310,9 +310,17 @@ def audit_navigation(categories, html, base, extra_documents=()):
 
 
 def recover_navigation(root, base, html, reason, extra_documents=()):
-    from .simple_nav import extract_url_json_with_ai
+    from .simple_nav import _thin_flat_navigation, extract_url_json_with_ai, rendered_html
     root = Path(root)
     source = navigation_source(html, base, extra_documents)
+    if not extra_documents and _thin_flat_navigation(source, html):
+        try:
+            documents = rendered_html(base, root / 'evidence')
+            expanded = navigation_source(html, base, documents)
+            if set(expanded['valid_urls']) - set(source['valid_urls']):
+                source = expanded
+        except Exception as error:
+            save_json(root / 'browser_warning.json', {'error': str(error)})
     save_json(root / 'navigation_repair.json', {'status': 'running', 'reason': str(reason),
                                                'source_urls': len(source['valid_urls'])})
     try:

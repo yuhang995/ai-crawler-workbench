@@ -17,7 +17,7 @@ from urllib.parse import urljoin, urlsplit
 
 from .common import Client, CrawlError, public_url, read_json, save_json
 from .navigation_release import digest, require_release
-from .shopify_fastpath import export, product_handle
+from .shopify_fastpath import display_image_url, export, product_handle
 
 
 TRACKING_KEYS = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_term',
@@ -142,7 +142,8 @@ def _image_urls(value, base):
         parsed = urlsplit(url)
         if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
             raise CrawlError('site_adapter 返回无效图片 URL')
-        if url not in result:
+        url = display_image_url(url)
+        if url and url not in result:
             result.append(url)
     return result
 
@@ -212,6 +213,10 @@ def normalize_product(raw, product_url):
         for index, name in enumerate(option_names, 1):
             if name in options:
                 variant[f'option{index}'] = str(options[name])
+    if len(variants) > 1 and not option_names and not any(
+            any(variant.get(f'option{index}') for index in range(1, 4))
+            for variant in variants):
+        raise CrawlError('site_adapter 多变体商品缺少可区分的真实属性')
     options = raw.get('options')
     if not isinstance(options, list):
         options = [{'name': name} for name in option_names]
@@ -248,7 +253,15 @@ def collect_details(root, adapter, tracker, full_scope=False):
     detail, listings, small_fallback = {}, {}, None
     for key, category_url in _candidate_categories(root, full_scope):
         start = len(tracker.calls)
-        raw_urls = adapter.collect_product_urls(tracker, category_url)
+        path = urlsplit(category_url).path
+        if re.search(r'/(?:product|products)/[^/]+/?$', path, re.I):
+            # A visible mega-menu may expose named product models as taxonomy
+            # leaves.  Their membership is the leaf URL itself; do not ask a
+            # listing parser to discover unrelated recommendation cards.
+            tracker.get(category_url)
+            raw_urls = [category_url]
+        else:
+            raw_urls = adapter.collect_product_urls(tracker, category_url)
         calls = _request_slice(tracker, start, '分类采集')
         if not isinstance(raw_urls, list):
             raise CrawlError('collect_product_urls 必须返回 URL 数组')

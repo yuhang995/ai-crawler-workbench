@@ -1913,13 +1913,22 @@ def image_url(value, base=''):
     return parsed._replace(path=path, query=query_value, fragment='').geturl()
 
 
+def display_image_url(value, base=''):
+    target = image_url(value, base)
+    path = unquote(urlsplit(target).path).lower()
+    if path.endswith('.svg') or re.search(
+            r'(?:^|[/_.-])(?:logo|favicon|icon|sprite|badge|banner|placeholder)(?:[/_.-]|$)', path):
+        return ''
+    return target
+
+
 def normalize_product_images(product, base):
     """Normalize gallery/variant images and report only discarded bad values."""
     discarded = []
     normalized = []
     for item in product.get('images', []):
         raw = item.get('src', '') if isinstance(item, dict) else item
-        target = image_url(raw, base)
+        target = display_image_url(raw, base)
         if not target:
             if raw:
                 discarded.append(str(raw))
@@ -1931,15 +1940,16 @@ def normalize_product_images(product, base):
         normalized.append(item)
     product['images'] = normalized
     for variant in product.get('variants', []):
-        featured = variant.get('featured_image')
-        if isinstance(featured, dict) and featured.get('src'):
-            target = image_url(featured['src'], base)
-            if target:
-                featured = dict(featured); featured['src'] = target
-                variant['featured_image'] = featured
-            else:
-                discarded.append(str(featured['src']))
-                variant['featured_image'] = None
+        featured = variant.get('featured_image') or variant.get('image')
+        raw = (featured.get('src') or featured.get('url')) if isinstance(featured, dict) else featured
+        target = display_image_url(raw, base)
+        if raw and not target:
+            discarded.append(str(raw))
+        variant['featured_image'] = {'src': target} if target else None
+        if not target:
+            matched = variant_images(product, variant)
+            if matched:
+                variant['featured_image'] = {'src': matched[0]}
     return discarded
 
 
@@ -1953,15 +1963,15 @@ def source_product_without_images(sample):
 def variant_images(product, variant):
     matched, gallery = [], []
     for img in product.get('images', []):
-        src = image_url(img.get('src', '') if isinstance(img, dict) else img)
+        src = display_image_url(img.get('src', '') if isinstance(img, dict) else img)
         if src:
             gallery.append(src)
             if isinstance(img, dict) and (str(variant['id']) in map(str, img.get('variant_ids', [])) or (variant.get('image_id') is not None and str(variant['image_id']) == str(img.get('id')))):
                 matched.append(src)
     featured = variant.get('featured_image')
     if isinstance(featured, dict) and featured.get('src'):
-        matched.insert(0, image_url(featured['src']))
-    return list(dict.fromkeys(matched))
+        matched.insert(0, display_image_url(featured['src']))
+    return list(dict.fromkeys(filter(None, matched)))
 
 
 def product_gallery(product):

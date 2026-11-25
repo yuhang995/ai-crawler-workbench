@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.common import AdapterRequired, CrawlError, read_json, save_json
-from core.pipeline import run_job
+from core.pipeline import run_job, _validate_repaired_full
 from core.simple_nav import publish_simple
 from core.validator import validate
 from tests.test_core import BASE, fixture, product
@@ -32,6 +32,19 @@ class CachedClient:
         response = SimpleNamespace(url=url, text=HOME, headers={'Content-Type': 'text/html'})
         self.cache[url] = response
         return response
+
+
+class FullRepairValidationTests(unittest.TestCase):
+    def test_site_adapter_full_validation_does_not_rerun_sample_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'site_adapter.py').write_text(ADAPTER_SOURCE, encoding='utf-8')
+            with patch('core.pipeline.validate', return_value={'passed': True, 'products': 8}) as validate_full, \
+                    patch('core.ai_repair._check_candidate') as sample_check:
+                result = _validate_repaired_full(root, {'detail_scope': 'all_products'})
+            self.assertEqual(result['products'], 8)
+            validate_full.assert_called_once_with(root)
+            sample_check.assert_not_called()
 
 
 def completed_navigation(root, base, html, platform, **kwargs):

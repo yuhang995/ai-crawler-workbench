@@ -533,6 +533,8 @@ def collect_product_urls(client, category_url) -> list[str]:
 def fetch_product(client, product_url) -> dict:
     动态请求商品真实页面或公开接口，返回 id、title、url、currency、description、images、variants。
     variants 每项至少包含 id、price；可包含 sku、compare_at_price、available、images、options。
+    仅从当前商品画廊或对应商品结构化数据提取 images，禁止收集整页 img。颜色、款式等视觉变体有独立来源图片时按 SKU 写入 variants[].image 或 images；没有绑定证据时留空。
+    多变体商品必须保留来源中的真实选项名和值（例如 Color/Size），不得只返回不同 SKU；来源若提供每个变体的图片/图集，必须放入该变体的 images 并与对应 SKU 绑定。商品级 images 应使用前台商品画廊，不能把视频封面、推荐图或导航图当主图。
 
 sample_scope.json 已优先给出最多10个深层叶分类。宿主会按顺序选择首个至少含3个不同父商品的分类；全部候选都不足3个时，才允许使用真实的1–2商品小目录。你无需生成 detail_url.json、listings.json、samples.json、CSV、JSON Pointer、source_mapping、运行脚本或打包文件；这些全部由 core.adapter_runner 生成并验真。
 

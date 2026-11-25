@@ -24,6 +24,23 @@ from .validator import validate, validate_navigation
 
 PROJECT = Path(__file__).resolve().parents[1]
 
+
+def _validate_repaired_full(root, original_scope):
+    """Validate host-expanded repair output without shrinking it to 3 items.
+
+    ``_check_candidate`` reruns a site adapter in sample mode. That is correct
+    inside the AI sandbox, but after the host has executed ``--all`` it would
+    overwrite the completed full crawl with the first three products again.
+    """
+    root = Path(root)
+    if (root / 'site_adapter.py').is_file():
+        result = validate(root)
+        if not isinstance(result, dict) or result.get('passed') is not True:
+            raise CrawlError('修复后全量产物未通过宿主独立验证')
+        return result
+    from .ai_repair import _check_candidate
+    return _check_candidate(root, original_scope)
+
 _RETRYABLE_SAMPLE_ERRORS = (
     '达到接口 250 变体上限，需非标完整性核验',
     'Hydrogen 配置型套装缺少独立可验证变体',
@@ -623,8 +640,7 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                 if product_result.returncode:
                     raise CrawlError('修复后全量商品采集失败: ' +
                                      (product_result.stderr or product_result.stdout)[-2000:])
-                from .ai_repair import _check_candidate
-                _check_candidate(root, full_scope)
+                _validate_repaired_full(root, full_scope)
             detail = read_json(root / 'detail_url.json')
             selected = {key: categories[key] for key in detail}
             # Bind repaired detail scope to the already-published navigation.
@@ -911,6 +927,11 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                   'seconds': round(time.perf_counter() - start, 3), 'nav_seconds': round(nav_seconds, 4),
                   'validation': result, 'samples': preview, 'llm_invocations': int((root / 'ai_invocation.json').exists()) + int((root / 'navigation_invocation.json').exists())}
         report['warnings']=read_json(root/'warnings.json') if (root/'warnings.json').exists() else []
+        for warning in result.get('image_quality', {}).get('warnings', []):
+            if warning not in report['warnings']:
+                report['warnings'].append(warning)
+        if result.get('image_quality', {}).get('warnings'):
+            save_json(root / 'warnings.json', report['warnings'])
         repair_path = root / 'ai_repair.json'
         if repair_path.is_file():
             repair = read_json(repair_path)

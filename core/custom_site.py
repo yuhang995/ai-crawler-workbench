@@ -666,6 +666,8 @@ def _distinct_samples(client, root, product, urls, cache, limit, skipped=None,
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             save_json(checkpoint, sample)
         sample = cache[url]
+        from .shopify_fastpath import normalize_product_images
+        normalize_product_images(sample['product'], url)
         parent = str(sample['product']['id'])
         if parent in parents:
             continue

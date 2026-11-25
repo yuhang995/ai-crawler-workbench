@@ -12,7 +12,7 @@ from core.detector import observe_market, detect
 
 BASE='https://example.com'
 def product(i):
- return {'id':i,'handle':f'p{i}','title':f'Product {i}','variants':[{'id':i*10,'price':'12.50','compare_at_price':'20.00','option1':'Red','option2':'M','available':True}], 'options':[{'name':'Color'},{'name':'Size'}], 'images':[{'src':'https://cdn.example.com/red.jpg','variant_ids':[i*10]}]}
+ return {'id':i,'handle':f'p{i}','title':f'Product {i}','variants':[{'id':i*10,'price':'12.50','compare_at_price':'20.00','option1':'Red','option2':'M','available':True}], 'options':[{'name':'Color'},{'name':'Size'}], 'images':[{'src':f'https://cdn.example.com/p{i}-red.jpg','variant_ids':[i*10]}]}
 def fixture():
  ps=[product(i) for i in range(1,4)]
  html='<main id="product-grid">'+''.join(f'<a href="/products/p{i}">P{i}</a>' for i in range(1,4))+'</main>'

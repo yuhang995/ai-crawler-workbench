@@ -238,6 +238,19 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(detail, {'Shop,Shop Tiny': [BASE + '/tiny/product/one']})
         self.assertTrue(listings['Shop,Shop Tiny']['small_catalog'])
 
+    def test_adapter_runner_rejects_indistinguishable_multiple_variants(self):
+        from core.adapter_runner import normalize_product
+        raw = {
+            'id': 'p1', 'title': 'Product', 'url': BASE + '/products/p1',
+            'currency': 'USD', 'images': [BASE + '/image.jpg'],
+            'variants': [
+                {'id': 'v1', 'sku': 'v1', 'price': '10'},
+                {'id': 'v2', 'sku': 'v2', 'price': '10'},
+            ],
+        }
+        with self.assertRaisesRegex(CrawlError, '缺少可区分的真实属性'):
+            normalize_product(raw, raw['url'])
+
     def test_repair_scope_falls_back_to_valid_url_json_when_all_titles_are_marketing(self):
         scope = {'selected_categories': {'Buy for Business': BASE + '/business'},
                  'sample_candidates': [{'category': 'About Us',

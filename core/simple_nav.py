@@ -1682,19 +1682,23 @@ def rendered_html(base, out, budget=10):
                 except Exception:
                     if remaining() > 250:
                         page.wait_for_timeout(min(1000, remaining()))
-                controls = page.locator('header button:visible,header summary:visible,nav button:visible,nav summary:visible,header a:visible')
+                controls = page.locator(
+                    'header button:visible,header summary:visible,nav button:visible,'
+                    'nav summary:visible,header a:visible,nav a:visible').all()
                 # One bounded interaction pass is enough to mount lazy mega
                 # menus without turning navigation recovery into open-ended
                 # browser automation.
-                for i in range(min(controls.count(), 8)):
+                for control in controls[:10]:
                     if remaining() < 350:
                         break
-                    control = controls.nth(i)
                     try:
                         control.hover(timeout=min(400, remaining()))
-                        if control.evaluate("e=>e.tagName==='BUTTON'||e.tagName==='SUMMARY'"):
-                            control.click(timeout=min(400, remaining()))
+                        page.wait_for_timeout(min(150, remaining()))
                         snapshots.append(page.content())
+                        if control.evaluate("e=>!e.closest('a[href],form') && e.getAttribute('aria-expanded')!=='true' && (e.tagName==='SUMMARY'||e.hasAttribute('aria-controls')||e.hasAttribute('aria-haspopup')||e.hasAttribute('aria-expanded'))"):
+                            control.click(timeout=min(400, remaining()))
+                            page.wait_for_timeout(min(150, remaining()))
+                            snapshots.append(page.content())
                     except Exception:
                         continue
             finally:
@@ -1704,6 +1708,17 @@ def rendered_html(base, out, budget=10):
         finally:
             browser.close()
     return snapshots
+
+
+def _thin_flat_navigation(data, html):
+    from bs4 import BeautifulSoup
+    count = len(data.get('source_navigation_urls', ()))
+    nested = any(line.startswith('  ') and ' -> ' in line
+                 for line in data.get('navigation_outline', '').splitlines())
+    return (count <= 5 or (count <= 15 and not nested)) and bool(
+        BeautifulSoup(html, 'html.parser').select_one(
+            'header a, nav a, header button, nav button, header summary, nav summary,'
+            'header [aria-haspopup], nav [aria-haspopup], header [aria-expanded], nav [aria-expanded]'))
 
 
 def _rendered_body_category_digest(html, base):
@@ -1814,8 +1829,8 @@ def validate_uploaded_categories(candidate, base):
         raise ValueError('分类文件必须是非空 JSON 对象，最多 5000 行')
     origin = urlsplit(base)
     origin_host = (origin.hostname or '').casefold().removeprefix('www.')
+    product_leaf = re.compile(r'/(?:product|products)/[^/?#]+(?:/|$)', re.I)
     blocked = re.compile(
-        r'/(?:product|products)/[^/?#]+(?:/|$)|'
         r'/(?:pages?|blogs?|account|login|cart|search)(?:/|$)|'
         r'(?:^|[-_/])gift[-_]?cards?(?:[-_/]|$)|'
         r'(?:^|[-_/])(?:support|warranty|faq)(?:[-_/]|$)', re.I)
@@ -1839,6 +1854,11 @@ def validate_uploaded_categories(candidate, base):
                 or target.password is not None or target_host != origin_host):
             raise ValueError('分类 URL 必须是当前站点的公开 HTTP(S) 链接：' + url)
         searchable = (target.path + ('?' + target.query if target.query else '')).casefold()
+        # Explicit product models are legitimate taxonomy leaves when the
+        # visible menu nests them below a real product family.  Keep rejecting
+        # isolated PDPs submitted as root/second-level categories.
+        if product_leaf.search(searchable) and len(parts) != 3:
+            raise ValueError('单品链接只能作为三级产品型号目录：' + url)
         if blocked.search(searchable):
             raise ValueError('分类文件包含单品、内容页或功能链接：' + url)
         if key in result:
@@ -2396,7 +2416,8 @@ def run_simple(root, base, html):
             data = custom_data
     if (not data['has_static_navigation']
             or len(data.get('source_navigation_urls', [])) < RENDER_MIN_CATEGORY_LINKS
-            or data.get('bytes', 0) < RENDER_MIN_SLIM_BYTES):
+            or data.get('bytes', 0) < RENDER_MIN_SLIM_BYTES
+            or _thin_flat_navigation(data, html)):
         try:
             snapshots = rendered_html(base, root / 'evidence')
         except Exception as error:
