@@ -70,13 +70,29 @@ def legal_url(url, base):
             and not any(word in path for word in ('support', 'warranty', 'faq', 'gift-card', 'gift_card')))
 
 
+_ATTRIBUTION_KEYS = frozenset({
+    'gclid', 'fbclid', 'msclkid', 'mc_cid', 'mc_eid', 'ref', 'srsltid',
+    'abralink', '_pos', '_sid', '_ss',
+})
+
+
+def strip_category_tracking(value):
+    parsed = urlsplit(value)
+    if not parsed.query:
+        return value
+    kept = []
+    for part in parsed.query.split('&'):
+        name = unquote(part.partition('=')[0]).casefold()
+        if not (name.startswith('utm_') or name in _ATTRIBUTION_KEYS):
+            kept.append(part)
+    return parsed._replace(query='&'.join(kept)).geturl()
+
+
 def _normalized_outline_url(value, base):
     """Normalize duplicate noise without discarding real filter queries."""
-    parsed = urlsplit(urljoin(base, value))
+    parsed = urlsplit(strip_category_tracking(urljoin(base, value)))
     path = re.sub(r'/+$', '', parsed.path) or '/'
-    query = '&'.join(part for part in parsed.query.split('&')
-                     if part and not re.match(r'(?i)(?:utm_[^=]*|fbclid|gclid)=', part))
-    return parsed._replace(path=path, query=query, fragment='').geturl()
+    return parsed._replace(path=path, fragment='').geturl()
 
 
 def _compact_slim_text(text, base, limit=MAX_AI_SLIM_BYTES):
@@ -281,7 +297,7 @@ def _shopify_catalog_landing_navigation(html, base):
 
 def _category_target(base, target):
     """Preserve an explicit locale context for root-relative category hrefs."""
-    value = str(target or '').strip()
+    value = strip_category_tracking(str(target or '').strip())
     parsed = urlsplit(base)
     locale = re.fullmatch(r'/([a-z]{2}-[a-z]{2})/?', parsed.path, re.I)
     if locale and re.match(r'^/(?:collections|category|categories)/', value, re.I):
@@ -741,6 +757,11 @@ def _label(node):
             if (str(parent.get('aria-hidden', '')).casefold() == 'true'
                     or parent.has_attr('hidden')):
                 return False
+            marker = ' '.join([*parent.get('class', []), str(parent.get('aria-label', ''))])
+            if (re.search(r'(?:badge|tag|pill|label|eyebrow)', marker, re.I)
+                    and re.fullmatch(r'new|hot|sale|popular|best\s*seller',
+                                     ' '.join(parent.stripped_strings), re.I)):
+                return False
         return True
 
     strings = [item for item in node.find_all(string=True) if str(item).strip() and visible(item)]
@@ -896,6 +917,26 @@ def _outline(node, base):
         new list/template ownership boundary to preserve the real owner.
         """
         direct = [child for child in current.children if getattr(child, 'name', None)]
+        # A column can place its heading in the first <li>, beside the
+        # linked <li> rows, or before a sibling list in a layout wrapper.
+        for index, candidate in enumerate(direct[:-1]):
+            heading = candidate
+            if candidate.name == 'li':
+                visible_children = [child for child in candidate.children
+                                    if getattr(child, 'name', None) and not desktop_hidden(child)]
+                if len(visible_children) == 1:
+                    heading = visible_children[0]
+            marker = ' '.join(heading.get('class', []))
+            explicit_heading = (heading.name in {'h2', 'h3', 'h4', 'h5', 'h6'}
+                                or heading.get('role') == 'heading'
+                                or bool(re.search(r'(?:^|[-_\s])(?:title|heading|h[2-6])(?:[-_\s]|$)', marker, re.I)))
+            simple_heading = (index == 0 and heading.name in {'p', 'span', 'div', 'button'}
+                              and not category_bearing(heading)
+                              and not heading.select_one('a[href],ul,ol,button'))
+            if ((explicit_heading or simple_heading) and not desktop_hidden(heading)
+                    and item(heading) and len(_label(heading)) <= 100
+                    and any(category_bearing(child) for child in direct[index + 1:])):
+                return heading
         # Many web components keep a column title as plain text in a <div>
         # followed by a sibling list.  It is still the column's direct owner,
         # even though it is not a heading/span element.  Prefer that short own
@@ -1419,6 +1460,8 @@ def _repair_repeated_control_labels(categories, html, base_url):
 
 def slim_html_for_ai(html: str, base_url: str) -> dict:
     soup = parse_soup(html, 'lxml')
+    for anchor in soup.select('a[href]'):
+        anchor['href'] = strip_category_tracking(anchor['href'])
     valid = list(dict.fromkeys(_anchor_target(anchor, base_url) for anchor in soup.select('a[href]')
                               if not _universally_hidden(anchor)
                               and legal_url(_anchor_target(anchor, base_url), base_url)))
@@ -1547,6 +1590,11 @@ def slim_html_for_ai(html: str, base_url: str) -> dict:
             outline_lines.extend(_outline(item['node'], base_url))
         retained_menu_urls.update(item['urls'])
         for panel in item['panels']:
+            if panel.name == 'predictive-search-drawer':
+                continue
+            if (panel.name == 'mobile-navigation' and item['role'] == 'desktop'
+                    and _category_urls(item['node'], base_url)):
+                continue
             outline_lines.extend(_outline(panel, base_url))
     outline_lines = _collapse_duplicate_outline_labels(outline_lines)
     cards_by_url = {}
@@ -1888,6 +1936,8 @@ PROMPT = '''根据下方网站导航缩进树与 <main> 首页系列链接，整
 ④ 同一 URL 在不同一级菜单下必须分别保留完整路径。不要漏列标题及子分类，不把商品推荐卡片当分类。
 ⑤ 首页 main 独有且菜单未出现的系列链接用 URL 末尾 slug 作为平级键名放最后。
 ⑥ URL 只能使用大纲 [a]/[home] 中的真实目标；相对路径必须用 BASE 补成绝对 URL，保留所有查询参数及重复参数。禁止 /product/<slug>、/products/<slug> 单品详情、/pages/、账户、购物车和 gift-card。若输入证据明确包含精确的 /products/ 商品中心首页，可将该首页作为目录保留。
+⑦ Shop by Age & Stage、Shop by Concern 等桌面菜单里的真实筛选链接必须作为独立子分类。同路径但不同查询参数的链接分别保留，禁止删减或改写筛选参数。
+⑧ 分栏标题下缩进的链接必须保留分栏归属，即使标题没有 URL。例如 Shop,Shop Shop by Benefit,Shop Shop by Benefit Hydration。栏内 Shop All 可作为该分组入口。
 '''
 
 
@@ -1898,6 +1948,8 @@ SELF_HEAL_PROMPT = '''当前通用导航大纲没有覆盖原始导航中的大�
 2. 编写 extract_custom.py（只使用 Python 标准库或 BeautifulSoup），从 header.html 提取本网站的真实 1~3 级商品分类树，输出 category_candidate.json。
 3. 输出格式为 {"entries":[{"key":"一级,一级 二级","url":"完整URL"}]}。URL 必须逐字来自 valid_urls.json；不得输出单品详情、pages/blog/account/cart/search/gift-card。valid_urls.json 明确包含精确 /products/ 时允许保留该商品中心首页。
 4. 同 URL 在不同可见菜单归属下可以重复；通用 Shop All/View All 要使用所属分组名；保留页面显示大小写和深度优先顺序。
+   桌面菜单中的筛选链接如 Shop by Age & Stage、Shop by Concern 必须作为独立子分类；同路径不同查询参数不得合并或删减。
+   保留分栏标题与栏内链接的父子关系。无链接分栏标题保留在子项路径中，栏内 Shop All 可作为分组入口。
 5. 分类标题只能取直接 button/summary/heading/anchor 的自身文案；禁止对菜单容器使用 get_text() 把多个兄弟链接（如 Smooth Honey Meadow）拼成一个父标题。
 6. Python 可执行文件的绝对路径在 python_path.txt。隔离环境运行前先设置 PYTHONHASHSEED=0，再用该绝对路径运行 extract_custom.py 和 check_result.py；只有看到 OK 才能结束，否则修正脚本并重跑。
 最后用规定的结构化格式返回 category_candidate.json 的 entries。

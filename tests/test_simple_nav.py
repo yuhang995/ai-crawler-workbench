@@ -13,6 +13,46 @@ BASE = 'https://example.com/'
 
 
 class SimpleNavTests(unittest.TestCase):
+    def test_category_label_ignores_decorative_badge(self):
+        from bs4 import BeautifulSoup
+        from core.simple_nav import _label
+        for html, label in [
+            ('<a>Ready to Cook <span class="menu-badge">NEW</span></a>', 'Ready to Cook'),
+            ('<a><span class="label">New Arrivals</span></a>', 'New Arrivals'),
+            ('<a>Sale</a>', 'Sale'),
+        ]:
+            self.assertEqual(_label(BeautifulSoup(html, 'html.parser').a), label)
+
+    def test_desktop_menu_keeps_distinct_filter_queries_and_drops_tracking(self):
+        html = '''<header><nav><a href="/collections/bath">Bath</a>
+          <a href="/collections/bath?age_stage=Baby&amp;utm_source=menu&amp;_pos=1">Baby</a>
+          <a href="/collections/bath?age_stage=Toddler&amp;msclkid=ad">Toddler</a>
+          <a href="/collections/bath?filter.color=red&amp;filter.color=blue&amp;ref=nav">Colors</a>
+          </nav></header>'''
+        data = slim_html_for_ai(html, BASE)
+        expected = {
+            'Bath': BASE + 'collections/bath',
+            'Bath,Bath Baby': BASE + 'collections/bath?age_stage=Baby',
+            'Bath,Bath Toddler': BASE + 'collections/bath?age_stage=Toddler',
+            'Bath,Bath Colors': BASE + 'collections/bath?filter.color=red&filter.color=blue',
+        }
+        self.assertEqual(set(data['valid_urls']), set(expected.values()))
+        self.assertEqual(clean_categories(expected, data['valid_urls'], BASE)[0], expected)
+        for url in expected.values():
+            self.assertIn(url.removeprefix(BASE.rstrip('/')), data['text'])
+
+    def test_custom_menu_filter_urls_are_distinct(self):
+        from core.custom_navigation import navigation_source
+        html = '''<header><nav>
+          <a href="/bath-diapering">Bath</a>
+          <a href="/bath-diapering?age_stage=Baby&amp;utm_campaign=nav">Baby</a>
+          <a href="/bath-diapering?age_stage=Toddler&amp;srsltid=ad">Toddler</a>
+          </nav></header>'''
+        urls = navigation_source(html, BASE)['valid_urls']
+        self.assertEqual(set(urls), {BASE + 'bath-diapering',
+                                     BASE + 'bath-diapering?age_stage=Baby',
+                                     BASE + 'bath-diapering?age_stage=Toddler'})
+
     def test_singular_collection_route_is_a_real_category(self):
         from core.simple_nav import legal_url
         self.assertTrue(legal_url('https://example.com/collection/all-products',

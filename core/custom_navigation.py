@@ -257,9 +257,12 @@ def _comparison_url(url):
 
 
 def navigation_source(html, base, extra_documents=()):
+    from .simple_nav import strip_category_tracking
     regions = []
     for document in [html, *extra_documents]:
         soup = parse_soup(document)
+        for anchor in soup.select('a[href]'):
+            anchor['href'] = strip_category_tracking(anchor['href'])
         for node in soup.select('script,style,svg,noscript,img,footer'):
             node.decompose()
         for node in soup.find_all(string=lambda value: isinstance(value, Comment)):

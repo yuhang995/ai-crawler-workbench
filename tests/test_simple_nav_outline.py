@@ -15,6 +15,20 @@ def links(count):
 
 
 class SimpleNavOutlineTests(unittest.TestCase):
+    def test_mega_menu_columns_own_sibling_lists_and_linked_heading_rows(self):
+        html = '''<header><nav><ul><li><button>Products</button>
+          <div><section><h3>Benefits</h3><ul>
+          <li><a href="/collections/hydration">Hydration</a></li></ul>
+          <div><a href="/collections/immunity">Immunity</a></div></section>
+          <ul><li><a class="column-title" href="/collections/pantry">Pantry</a></li>
+          <li><a href="/collections/bundles">Bundles</a></li></ul></div></li></ul>
+          </nav></header>'''
+        outline = slim_html_for_ai(html, BASE)['navigation_outline']
+        self.assertIn('  [label] Benefits\n    [a] Hydration -> /collections/hydration\n'
+                      '    [a] Immunity -> /collections/immunity', outline)
+        self.assertIn('  [a] Pantry -> /collections/pantry\n'
+                      '    [a] Bundles -> /collections/bundles', outline)
+
     def test_locale_home_preserves_context_for_root_relative_collections(self):
         data = slim_html_for_ai(
             '<header><nav><a href="/collections/bottles">Bottles</a></nav></header>',
