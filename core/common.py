@@ -46,6 +46,45 @@ class TaskCancelled(CrawlError):
     """A workbench operator requested a cooperative task stop."""
 
 
+def transient_collection_error(error):
+    """Recognize exhausted transport/rate-limit retries without hiding access or data errors."""
+    if isinstance(error, (AccessChallenge, AdapterRequired, TaskCancelled)):
+        return False
+    status = getattr(getattr(error, 'response', None), 'status_code', None)
+    if status in (429, 500, 502, 503, 504):
+        return True
+    return isinstance(error, CrawlError) and bool(re.search(
+        r'HTTP(?: Error)?\s*:?\s*(?:429|500|502|503|504)\b|curl: \((?:6|7|28|35|52|55|56)\)|'
+        r'could not resolve host|name resolution|connection (?:closed|reset|refused)|'
+        r'(?:request|connection|operation) timed out|请求失败[^\n]*timeout',
+        str(error), re.I))
+
+
+def listing_checkpoint(root, namespace, url):
+    token = hashlib.sha256((namespace + '\0' + url).encode('utf-8')).hexdigest()
+    return Path(root) / 'evidence' / 'listing-checkpoints' / f'{token}.json'
+
+
+def read_listing_checkpoint(path, url):
+    try:
+        saved = read_json(path)
+        listing = saved['listing']
+        if (saved['url'] == url and listing.get('complete') and listing.get('urls')
+                and all(not isinstance(page, dict) or not page.get('html_file')
+                        or (path.parents[2] / page['html_file']).is_file()
+                        for page in listing.get('pages', []))):
+            return listing
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return None
+
+
+def save_listing_checkpoint(path, url, listing):
+    if listing.get('complete') and listing.get('urls'):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_json(path, {'url': url, 'listing': listing})
+
+
 class _BrowserHTTPResponse:
     """Small requests-compatible response backed by a Playwright navigation."""
 
@@ -400,6 +439,7 @@ class Client:
                            if proxy_pool else [])
         self.proxy_pool = list(dict.fromkeys(self.proxy_pool))
         self.proxy_pool_index = None
+        self.pool_generation = 0
         self.cancel_event = cancel_event
         self.state_dir = Path(state_dir) if state_dir else Path(__file__).resolve().parents[1] / 'browser_state'
         self.local = threading.local()
@@ -417,6 +457,11 @@ class Client:
         self.recovery_attempted_domains = set()
         self.fingerprint_indexes = {}
 
+    def enable_full_pacing(self):
+        with self.rate_lock:
+            self.min_interval = max(self.min_interval, 0.6)
+            self.parallel_pacing = False
+
     def _check_cancelled(self):
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise TaskCancelled('任务已由用户取消')
@@ -430,17 +475,27 @@ class Client:
         # proxy zero.  Once allocated, the task keeps that proxy until an
         # explicit transport/rate-limit rotation below.
         with self._proxy_pool_guard:
+            if self.proxy:
+                return
             index = self._proxy_pool_cursor.get('__task__', 0)
             self._proxy_pool_cursor['__task__'] = index + 1
-        self.proxy_pool_index = index % len(self.proxy_pool)
-        self.proxy = self.proxy_pool[self.proxy_pool_index]
+            ordered = [(index + offset) % len(self.proxy_pool)
+                       for offset in range(len(self.proxy_pool))]
+            self.proxy_pool_index = next(
+                (candidate for candidate in ordered
+                 if self._state_path(hostname, self.proxy_pool[candidate]).is_file()),
+                ordered[0])
+            self.proxy = self.proxy_pool[self.proxy_pool_index]
 
     def _advance_pool_proxy(self, hostname):
-        if not self.proxy_pool:
+        if len(self.proxy_pool) < 2 or self.proxy_pool_index is None:
             return False
-        current = self.proxy_pool_index if self.proxy_pool_index is not None else -1
-        self.proxy_pool_index = (current + 1) % len(self.proxy_pool)
-        self.proxy = self.proxy_pool[self.proxy_pool_index]
+        with self._proxy_pool_guard, self.lock:
+            self.proxy_pool_index = (self.proxy_pool_index + 1) % len(self.proxy_pool)
+            self.proxy = self.proxy_pool[self.proxy_pool_index]
+            self.pool_generation += 1
+            self.browser_cookies.clear()
+            self.browser_user_agents.clear()
         return True
 
     @classmethod
@@ -474,11 +529,17 @@ class Client:
             if legacy is not None:
                 sessions[hostname] = legacy
         session = sessions.get(hostname)
+        generations = getattr(self.local, 'pool_generations', None)
+        if generations is None:
+            generations = self.local.pool_generations = {}
+        if session is not None and generations.get(hostname, 0) != self.pool_generation:
+            return self._reset_session(hostname)
         if session is None:
             session = sessions[hostname] = self._new_session(hostname)
             # Preserve the historical attribute for callers/tests which
             # intentionally inspect or replace the current thread's session.
             self.local.session = session
+            generations[hostname] = self.pool_generation
         return session
 
     def _reset_session(self, hostname, rotate=False):
@@ -496,15 +557,20 @@ class Client:
             pass
         if rotate:
             self.fingerprint_indexes[hostname] = self.fingerprint_indexes.get(hostname, 0) + 1
+        self._load_browser_state(hostname)
         session = self._new_session(hostname)
         sessions[hostname] = session
+        if not hasattr(self.local, 'pool_generations'):
+            self.local.pool_generations = {}
+        self.local.pool_generations[hostname] = self.pool_generation
+        self._apply_browser_state(session, hostname)
         self.local.session = session
         return session
 
-    def _state_path(self, hostname):
+    def _state_path(self, hostname, proxy=None):
         proxy_authority = ''
-        if self.proxy:
-            parsed = urlsplit(self.proxy)
+        if proxy or self.proxy:
+            parsed = urlsplit(proxy or self.proxy)
             proxy_authority = f'{parsed.scheme}://{parsed.hostname}:{parsed.port}'
         identity = hashlib.sha256(proxy_authority.encode()).hexdigest()[:12]
         safe_host = re.sub(r'[^a-z0-9.-]+', '_', hostname.casefold())
@@ -621,6 +687,9 @@ class Client:
                         raise CrawlError('浏览器打开公开页面超时') from error
                     if urlsplit(page.url).hostname != parsed.hostname:
                         raise CrawlError('浏览器恢复跳转到不同站点')
+                    if response and response.status == 403:
+                        raise AccessChallenge(
+                            '浏览器访问公开页面仍返回 HTTP 403，请在本地浏览器人工确认访问', url)
                     html = None
                     for content_attempt in range(3):
                         try:
@@ -831,7 +900,7 @@ class Client:
                         session = self._reset_session(hostname)
                     else:
                         session = self._reset_session(hostname, rotate=True)
-                    time.sleep(0.5 * (attempt + 1))
+                    self.backoff(0.5 * (attempt + 1))
             if r.status_code in (301, 302, 303, 307, 308):
                 from urllib.parse import urljoin
                 location = r.headers.get('Location')
@@ -998,6 +1067,7 @@ class Client:
 
     def manual_browser_confirm(self, url, timeout=300):
         """Prefer visible ruyiPage Firefox, then fall back to Playwright."""
+        self._ensure_pool_proxy(urlsplit(public_url(url)).hostname.casefold())
         try:
             return self._manual_ruyipage_confirm(url, timeout)
         except AccessChallenge:

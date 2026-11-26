@@ -13,6 +13,39 @@ BASE = 'https://example.com/'
 
 
 class SimpleNavTests(unittest.TestCase):
+    def test_rendered_menu_is_additive_even_when_snapshot_has_more_links(self):
+        from core.simple_nav import _merge_navigation_data
+
+        static = slim_html_for_ai(
+            '<nav><a href="/collections/static">Static child</a></nav>', BASE)
+        rendered = slim_html_for_ai(
+            '<nav><a href="/collections/new">New child</a>'
+            '<a href="/collections/other">Other child</a></nav>', BASE)
+        merged = _merge_navigation_data(static, rendered, BASE)
+        self.assertEqual(set(merged['source_navigation_urls']), {
+            BASE + 'collections/static', BASE + 'collections/new', BASE + 'collections/other'})
+        self.assertIn('Static child', merged['text'])
+        self.assertIn('New child', merged['text'])
+        self.assertEqual(merged['navigation_coverage']['ratio'], 1.0)
+
+    def test_custom_menu_retains_product_category_paths_and_column_ownership(self):
+        from core.simple_nav import _custom_navigation_for_ai
+
+        html = """<nav><ul><li><button>Shop</button><div><h3>By Benefit</h3><ul>
+            <li><a href="/products/benefits/sleep">Sleep</a></li>
+            <li><a href="/products/probiotics">Probiotics</a></li>
+            </ul></div></li></ul></nav>
+            <main><a href="/products/featured">Featured product</a></main>"""
+        snapshot = '<nav><button>Shop</button></nav>'
+        result = _custom_navigation_for_ai(html, BASE, [snapshot])
+        self.assertEqual(set(result['valid_urls']), {
+            BASE + 'products/benefits/sleep', BASE + 'products/probiotics'})
+        self.assertRegex(result['navigation_outline'],
+                         r'(?m)^  \[label\] By Benefit$\n^    \[a\] Sleep')
+        shopify = html.replace('<nav>', '<nav><a href="/collections/all">Shop All</a>', 1)
+        result = _custom_navigation_for_ai(shopify, BASE)
+        self.assertNotIn(BASE + 'products/probiotics', result['valid_urls'])
+
     def test_category_label_ignores_decorative_badge(self):
         from bs4 import BeautifulSoup
         from core.simple_nav import _label

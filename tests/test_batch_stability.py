@@ -9,8 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.ai_repair import _remove_tree_iterative
-from core.common import Client, AdapterRequired
-from core.pipeline import compact_shopify_listing_evidence, collect_full_shopify_listings
+from core.common import Client, AdapterRequired, CrawlError
+from core.pipeline import compact_shopify_listing_evidence, collect_full_shopify_listings, package
 from core.shopify_fastpath import (image_url, normalize_product_images, listing_dom,
                                    run_products, source_product_without_images,
                                    ListingCollectionTimeout)
@@ -75,6 +75,81 @@ class BatchStabilityTests(unittest.TestCase):
         self.assertEqual([item['url'] for item in values], list(categories.values()))
         self.assertEqual(progress[-1], (8, 8, 'success'))
         self.assertEqual(warnings, [])
+
+    def test_single_blocked_collection_is_reported_and_healthy_listing_is_packaged(self):
+        from zipfile import ZipFile
+
+        good = 'https://shop.example/collections/good'
+        blocked = 'https://shop.example/collections/blocked'
+        listing = {'url': good, 'urls': ['https://shop.example/products/item'],
+                   'products': [], 'feeds': [], 'pages': [], 'complete': True}
+
+        def collect(client, url, **kwargs):
+            if url == blocked:
+                raise CrawlError('公开 JSON 访问阻塞: HTTP Error 403')
+            return listing
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch('core.pipeline.collect_listing', side_effect=collect):
+                urls, values, warnings = collect_full_shopify_listings(
+                    object(), {'Good': good, 'Blocked': blocked, 'Alias': blocked},
+                    diagnostics_root=root)
+            self.assertEqual(urls, [good])
+            self.assertEqual(values, [listing])
+            self.assertEqual(read_json(root / 'failed_categories.json'), warnings)
+            self.assertEqual(read_json(root / 'warnings.json'), warnings)
+            self.assertEqual(warnings[0]['categories'], ['Blocked', 'Alias'])
+            save_json(root / 'detail_url.json', {'Good': listing['urls']})
+            with ZipFile(package(root)) as bundle:
+                self.assertIn('failed_categories.json', bundle.namelist())
+                self.assertIn('detail_url.json', bundle.namelist())
+
+    def test_most_categories_blocked_keeps_diagnostics_and_stops(self):
+        categories = {str(i): f'https://shop.example/collections/{i}' for i in range(5)}
+        with tempfile.TemporaryDirectory() as folder, patch(
+                'core.pipeline.collect_listing',
+                side_effect=lambda client, url, **kwargs: (
+                    {'url': url} if url.endswith('/0') else self._raise_403())):
+            with self.assertRaisesRegex(CrawlError, '403'):
+                collect_full_shopify_listings(object(), categories, diagnostics_root=folder)
+            self.assertEqual(len(read_json(Path(folder) / 'failed_categories.json')), 4)
+
+    @staticmethod
+    def _raise_403():
+        raise CrawlError('HTTP 403')
+
+    def test_full_shopify_listing_resumes_complete_checkpoints_and_retries_only_failed(self):
+        good, flaky = ('https://shop.example/collections/' + name for name in ('good', 'flaky'))
+        categories = {'Good': good, 'Flaky': flaky}
+
+        def collect(client, url, **kwargs):
+            if url == flaky:
+                raise CrawlError('请求失败: connection reset')
+            return {'url': url, 'urls': [url + '/products/test'], 'complete': True}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch('core.pipeline.collect_listing', side_effect=collect):
+                urls, _, _ = collect_full_shopify_listings(object(), categories, diagnostics_root=root)
+            self.assertEqual(urls, [good])
+            self.assertEqual(read_json(root / 'failed_categories.json')[0]['url'], flaky)
+            with patch('core.pipeline.collect_listing', return_value={
+                    'url': flaky, 'urls': [flaky + '/products/test'], 'complete': True}) as retry:
+                urls, _, _ = collect_full_shopify_listings(object(), categories, diagnostics_root=root)
+            self.assertEqual(urls, [good, flaky])
+            self.assertEqual([call.args[1] for call in retry.call_args_list], [flaky])
+            self.assertEqual(read_json(root / 'failed_categories.json'), [])
+
+    def test_full_pacing_uses_shared_interval_plus_jitter(self):
+        client = Client()
+        client.parallel_pacing = True
+        client.enable_full_pacing()
+        with patch('core.common.time.monotonic', return_value=100), patch(
+                'core.common.random.uniform', return_value=.07):
+            client.pace()
+        self.assertFalse(client.parallel_pacing)
+        self.assertAlmostEqual(client.next_request_at, 100.67)
 
     def test_client_cache_is_lru_bounded_and_skips_large_response(self):
         client = Client()

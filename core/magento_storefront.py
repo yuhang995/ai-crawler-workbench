@@ -288,8 +288,14 @@ def _grid(html, base, *, soup=None):
             target = _local(link['href'], base)
             if target and target not in urls:
                 urls.append(target)
-    next_link = soup.select_one('.pages a.next[href], .pager a.next[href], a[rel="next"][href]')
-    following = _local(next_link['href'], base) if next_link else ''
+    next_link = soup.select_one('.pages a.next[href], .pager a.next[href], a[rel~="next"][href], main a.next[href]')
+    next_link = next_link or soup.select_one('link[rel~="next"][href]')
+    # The parser has already decoded HTML entities in href; resolve once.
+    following = urljoin(base, next_link['href']) if next_link else ''
+    if (urlsplit(following).scheme not in {'http', 'https'}
+            or urlsplit(following).netloc != urlsplit(base).netloc):
+        following = ''
+    following = urlsplit(following)._replace(fragment='').geturl()
     return urls, following
 
 
@@ -301,7 +307,12 @@ def collect_listing(client, url):
         if next_url in visited:
             raise CrawlError('Magento 商品分页循环')
         visited.add(next_url)
-        response = client.get(next_url, timeout=45)
+        try:
+            response = client.get(next_url, timeout=45)
+        except CrawlError as error:
+            if not pages or type(error) is not CrawlError:
+                raise
+            raise CrawlError(f'Magento 下一页请求失败: {next_url}；{error}') from error
         found, following = _grid(response.text, response.url)
         if not found:
             raise CrawlError('Magento 分类页没有可验证的商品网格: ' + response.url)

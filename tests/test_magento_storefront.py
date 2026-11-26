@@ -46,6 +46,17 @@ class FakeClient:
 
 
 class MagentoStorefrontTests(unittest.TestCase):
+    def test_pagination_preserves_public_next_href_and_query_encoding(self):
+        from core.magento_storefront import _grid
+
+        base = 'https://shop.example/products'
+        head = '<link rel="next" href="?p=3&amp;order=price">'
+        body = '<main><a class="next" href="?p=2&amp;filter=a%2Bb#grid">Next</a></main>'
+        self.assertEqual(_grid(head + body, base)[1],
+                         base + '?p=2&filter=a%2Bb')
+        self.assertEqual(_grid(head, base)[1], base + '?p=3&order=price')
+        self.assertEqual(_grid('<link rel="next" href="https://other.example/p2">', base)[1], '')
+
     def test_hyva_simple_product_uses_form_sku_and_price_box(self):
         source = '''<body class="region-us catalog-product-view">
         <meta property="product:price:currency" content="USD">

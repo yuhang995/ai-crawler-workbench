@@ -17,7 +17,9 @@ from importlib import import_module
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
-from .common import AdapterRequired, CrawlError, Client, canonical, query, read_json, save_json
+from .common import (AdapterRequired, CrawlError, Client, canonical, query, read_json, save_json,
+                     transient_collection_error, listing_checkpoint, read_listing_checkpoint,
+                     save_listing_checkpoint, redact_sensitive)
 from .html_parser import parse_soup as BeautifulSoup
 
 
@@ -609,15 +611,6 @@ def _preserve_product_source(root, sample):
         reference['file'] = copied[relative]
 
 
-def _transient_product_error(error):
-    message = str(error).casefold()
-    return ('请求失败' in str(error) and any(marker in message for marker in (
-        'ssl_connect', 'connection closed', 'connection reset',
-        'could not resolve host', 'name resolution', 'dns',
-        'curl: (6)', 'curl: (28)', 'curl: (35)', 'curl: (56)',
-        'timed out', 'timeout')))
-
-
 def _distinct_samples(client, root, product, urls, cache, limit, skipped=None,
                       failed=None, preserve_sources=True):
     samples, parents = [], set()
@@ -647,11 +640,13 @@ def _distinct_samples(client, root, product, urls, cache, limit, skipped=None,
                     skipped.append({'url': url, 'reason': str(error)})
                     break
                 except CrawlError as error:
-                    transient = _transient_product_error(error)
+                    transient = transient_collection_error(error)
                     if not transient or transport_attempt == 4:
                         if transient and failed is not None:
-                            failed.append({'url': url, 'error': str(error),
+                            failed.append({'url': url,
+                                           'error': redact_sensitive(error, getattr(client, 'proxy', None)),
                                            'exception_type': type(error).__name__})
+                            save_json(root / 'failed_products.json', failed)
                             sample = None
                             break
                         raise
@@ -704,7 +699,10 @@ def _native_identity(platform, url):
 def run_custom_sample(client, root, platform, candidates, all_categories=False, full_products=False):
     root = Path(root)
     collect, product = _collectors(platform)
+    candidates = list(candidates)
     attempts = []
+    failed_categories = {}
+    checkpoint_enabled = all_categories and full_products
     selected, listings, detail, by_url, cache = {}, {}, {}, {}, {}
     samples = []
     native = False
@@ -712,8 +710,18 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
                    if any(other.startswith(key + ',') for other, _ in candidates)}
     for key, url in candidates:
         try:
+            if url in failed_categories:
+                continue
             if url not in by_url:
-                by_url[url] = collect(client, url)
+                if checkpoint_enabled:
+                    checkpoint = listing_checkpoint(root, 'custom-full-v1:' + platform, url)
+                    listing = read_listing_checkpoint(checkpoint, url)
+                    if listing is None:
+                        listing = collect(client, url)
+                        save_listing_checkpoint(checkpoint, url, listing)
+                    by_url[url] = listing
+                else:
+                    by_url[url] = collect(client, url)
             candidate = by_url[url]
             if candidate.get('source_format') == 'react_customer_json':
                 sources = candidate.get('source_responses', [])
@@ -751,6 +759,20 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
                     samples = candidate_samples
                     break
         except CrawlError as error:
+            if checkpoint_enabled and transient_collection_error(error):
+                failed_categories[url] = error
+                records = [
+                    {'code': 'collection_transport_failed', 'url': target,
+                     'categories': [label for label, address in candidates if address == target],
+                     'exception_type': type(failure).__name__,
+                     'message': '分类请求在重试后仍失败，未取得完整商品列表'}
+                    for target, failure in failed_categories.items()]
+                save_json(root / 'failed_categories.json', records)
+                warnings_path = root / 'warnings.json'
+                warnings = read_json(warnings_path) if warnings_path.is_file() else []
+                save_json(warnings_path, [item for item in warnings
+                          if item.get('code') != 'collection_transport_failed'] + records)
+                continue
             content_landing = (all_categories and url in parent_urls
                                and '分类页没有可验证的商品网格' in str(error))
             if content_landing:
@@ -776,6 +798,10 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
                 raise
             if all_categories:
                 raise
+    if failed_categories and not detail:
+        raise next(iter(failed_categories.values()))
+    if checkpoint_enabled and not failed_categories:
+        save_json(root / 'failed_categories.json', [])
     urls = list(dict.fromkeys(u for links in detail.values() for u in links))
     # Full runs may spend minutes paginating many category pages. Persist that
     # deterministic work before detail collection so a later transport error
@@ -784,6 +810,8 @@ def run_custom_sample(client, root, platform, candidates, all_categories=False, 
         save_json(root / "detail_url.json", detail)
         save_json(root / "listings.json", listings)
         save_json(root / 'sample_attempts.json', attempts)
+    if full_products:
+        (root / 'failed_products.json').unlink(missing_ok=True)
     if native and all_categories:
         skipped_products = []
         failed_products = []
@@ -913,6 +941,8 @@ def run_products(root, all_products=False):
     listings = read_json(root / 'listings.json')
     urls = list(dict.fromkeys(url for values in detail.values() for url in values))
     client = Client()
+    if all_products and callable(getattr(client, 'enable_full_pacing', None)):
+        client.enable_full_pacing()
     base_url = read_json(root / 'config.json')['base_url']
     client.get(base_url, timeout=45)
     platform = read_json(root / 'detection.json')['custom_platform']

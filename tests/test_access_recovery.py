@@ -137,6 +137,25 @@ class AccessRecoveryTests(unittest.TestCase):
         warm.assert_called_once_with(BASE)
         self.assertEqual(session.get.call_count, 2)
 
+    def test_generic_http_and_browser_403_require_manual_confirmation(self):
+        client = Client()
+        session = MagicMock()
+        session.get.return_value = response(status=403, text='<title>Forbidden</title>')
+        client.local.session = session
+        with patch('playwright.sync_api.sync_playwright') as playwright:
+            browser = playwright.return_value.__enter__.return_value.chromium.launch.return_value
+            page = browser.new_context.return_value.new_page.return_value
+            page.url = BASE
+            page.goto.return_value.status = 403
+            page.content.return_value = '<title>Forbidden</title>'
+            with self.assertRaisesRegex(AccessChallenge, 'HTTP 403') as failure:
+                client.get(BASE, attempts=1)
+        self.assertEqual(failure.exception.url, BASE)
+        session.get.assert_called_once()
+        browser.close.assert_called_once()
+        browser.new_context.return_value.cookies.assert_not_called()
+        self.assertEqual(client.cache, {})
+
     def test_json_interstitial_rotates_curl_session_without_manual_browser(self):
         client = Client()
         challenged = response(text='<html><title>Verify you are human</title></html>')

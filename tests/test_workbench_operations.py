@@ -95,6 +95,24 @@ class WorkbenchOperationsTests(unittest.TestCase):
             with app.LOCK:
                 app.JOBS.clear()
 
+    def test_proxy_pool_reuses_confirmed_state_on_matching_exit(self):
+        Client._proxy_pool_cursor.clear()
+        with tempfile.TemporaryDirectory() as directory:
+            saved = Client(proxy=P2, state_dir=directory)
+            saved._save_browser_state('store.example', [
+                {'name': 'session', 'value': 'fixture', 'domain': 'store.example'}], 'Firefox fixture')
+            client = Client(proxy_pool=[P1, P2], state_dir=directory)
+            with patch('core.common.requests.Session', side_effect=[MagicMock(), MagicMock()]):
+                session = client._session('store.example')
+                client._apply_browser_state(session, 'store.example')
+                self.assertEqual(client.proxy, P2)
+                session.cookies.set.assert_called_once()
+                self.assertTrue(client._advance_pool_proxy('store.example'))
+                next_session = client._session('store.example')
+                client._apply_browser_state(next_session, 'store.example')
+                self.assertEqual(client.proxy, P1)
+                next_session.cookies.set.assert_not_called()
+
     def test_proxy_pool_file_order_switch_and_redaction(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'working_proxies.txt'

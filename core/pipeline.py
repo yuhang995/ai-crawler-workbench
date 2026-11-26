@@ -14,12 +14,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from .common import (Client, CrawlError, AdapterRequired, save_json, read_json,
                      split_category_key, AccessChallenge, redact_proxy,
-                     redact_sensitive, TaskCancelled)
+                     redact_sensitive, TaskCancelled, transient_collection_error,
+                     listing_checkpoint, read_listing_checkpoint, save_listing_checkpoint)
 from .nav_extractor import extract_navigation, needs_dynamic, expand_menus
 from .detector import detect
 from .shopify_fastpath import (collect_listing, fetch_product, export,
                                merge_explicit_colorways, _large_document_get,
-                               ListingCollectionTimeout)
+                               ListingCollectionTimeout, listing_access_blocked)
 from .validator import validate, validate_navigation
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -156,7 +157,7 @@ def direct_shopify_product_scope(detection, categories):
 
 def collect_full_shopify_listings(client, categories, evidence_root=None,
                                    skip_non_collection_landings=False,
-                                   progress=None, max_workers=4):
+                                   progress=None, max_workers=4, diagnostics_root=None):
     """Collect every product-bearing collection and skip proven parent landings.
 
     A menu parent may be a campaign/collection landing with no finite product
@@ -170,7 +171,13 @@ def collect_full_shopify_listings(client, categories, evidence_root=None,
     urls = list(dict.fromkeys(categories.values()))
 
     def collect_one(index, url):
+        checkpoint = (listing_checkpoint(diagnostics_root, 'shopify-full-v1', url)
+                      if diagnostics_root is not None else None)
         try:
+            if checkpoint is not None:
+                cached = read_listing_checkpoint(checkpoint, url)
+                if cached is not None:
+                    return index, url, 'success', cached, None
             try:
                 value = collect_listing(client, url, prefer_feed_order=True,
                                         max_seconds=180)
@@ -180,6 +187,8 @@ def collect_full_shopify_listings(client, categories, evidence_root=None,
                     raise
                 value = collect_listing(client, url, prefer_feed_order=True)
             value = compact_shopify_listing_evidence(value, evidence_root)
+            if checkpoint is not None:
+                save_listing_checkpoint(checkpoint, url, value)
             return index, url, 'success', value, None
         except Exception as error:
             return index, url, 'error', None, error
@@ -201,15 +210,51 @@ def collect_full_shopify_listings(client, categories, evidence_root=None,
             if progress:
                 progress(done, len(urls), url, status)
 
-    values, successful, warnings, deferred_empty, deferred_timeout = [], [], [], [], []
+    url_order = {url: index for index, url in enumerate(urls)}
+    blocked = [(url, error) for url, status, _, error in outcomes.values()
+               if status == 'error' and listing_access_blocked(error)]
+    blocked.sort(key=lambda record: url_order[record[0]])
+    transient = [(url, error) for url, status, _, error in outcomes.values()
+                 if status == 'error' and not listing_access_blocked(error)
+                 and (isinstance(error, ListingCollectionTimeout) or transient_collection_error(error))]
+    failed_categories = [
+        {'code': 'collection_access_blocked', 'url': url,
+         'categories': [key for key, target in categories.items() if target == url],
+         'exception_type': type(error).__name__,
+         'message': '分类返回 HTTP 403 或访问验证，无法确认完整商品列表'}
+        for url, error in blocked]
+    failed_categories.extend({
+        'code': ('listing_collection_timeout_skipped' if isinstance(error, ListingCollectionTimeout)
+                 else 'collection_transport_failed'),
+        'url': url, 'categories': [key for key, target in categories.items() if target == url],
+        'exception_type': type(error).__name__,
+        'message': '分类请求在重试后仍失败，未取得完整商品列表',
+    } for url, error in transient)
+    failed_categories.sort(key=lambda record: url_order[record['url']])
+    if diagnostics_root is not None:
+        save_json(Path(diagnostics_root) / 'failed_categories.json', failed_categories)
+        if failed_categories:
+            warning_path = Path(diagnostics_root) / 'warnings.json'
+            existing = read_json(warning_path) if warning_path.is_file() else []
+            save_json(warning_path, [item for item in existing
+                                     if item.get('code') not in {'collection_access_blocked',
+                                                                 'collection_transport_failed',
+                                                                 'listing_collection_timeout_skipped'}]
+                      + failed_categories)
+    if blocked and (len(blocked) * 5 >= len(urls) * 4
+                    or not any(status == 'success' for _, status, _, _ in outcomes.values())):
+        raise blocked[0][1]
+    if transient and not any(status == 'success' for _, status, _, _ in outcomes.values()):
+        raise transient[0][1]
+    skipped_urls = {url for url, _ in blocked + transient}
+    values, successful, warnings, deferred_empty = [], [], failed_categories, []
     for index in range(len(urls)):
         url, status, value, error = outcomes[index]
         if status == 'success':
             successful.append(url)
             values.append(value)
             continue
-        if isinstance(error, ListingCollectionTimeout):
-            deferred_timeout.append((url, str(error), error))
+        if url in skipped_urls:
             continue
         if isinstance(error, AdapterRequired):
             message = str(error)
@@ -240,14 +285,6 @@ def collect_full_shopify_listings(client, categories, evidence_root=None,
             'message': '集合 Feed 为空且前端无可验证商品；已保留其他正常集合继续全量采集',
             'url': url, 'reason': message,
         } for url, message, _ in deferred_empty)
-    if deferred_timeout:
-        if not values:
-            raise deferred_timeout[0][2]
-        warnings.extend({
-            'code': 'listing_collection_timeout_skipped',
-            'message': '单个超大分类超过 180 秒上限；已保留其他正常分类继续全量采集',
-            'url': url, 'reason': message,
-        } for url, message, _ in deferred_timeout)
     return successful, values, warnings
 
 
@@ -322,6 +359,8 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
         if cancel_event is not None:
             client_options['cancel_event'] = cancel_event
         client = Client(**client_options) if client_options else Client()
+        if full_products and callable(getattr(client, 'enable_full_pacing', None)):
+            client.enable_full_pacing()
         if '://' not in site:
             site = 'https://' + site
         p = urlsplit(site)
@@ -753,11 +792,14 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                     unique, values, skipped_landing_warnings = collect_full_shopify_listings(
                         client, selected, root / 'evidence' / 'listing-pages',
                         skip_non_collection_landings=(detection['mode'] == 'standard_shopify'),
+                        diagnostics_root=root,
                         progress=lambda done, total, url, status: event(
                             'listing', f'全量分类进度 {done}/{total}',
                             progress=48 + int(12 * done / max(1, total)),
                             current_url=url, collection_status=status))
-                    selected = {key: url for key, url in selected.items() if url in set(unique)}
+                    successful_urls = set(unique)
+                    selected = {key: url for key, url in selected.items() if url in successful_urls}
+                    write_sample_scope()
                 else:
                     with ThreadPoolExecutor(max_workers=1) as pool:
                         # Preserve the historical adapter call contract for
@@ -771,7 +813,9 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                     for warning in value.get('warnings',[]):warn(root,warning['code'],warning['message'],url=warning.get('url'))
             elif simple:
                 runtime_warnings = read_json(root/'warnings.json') if (root/'warnings.json').is_file() else []
-                runtime_warnings.extend(skipped_landing_warnings if 'skipped_landing_warnings' in locals() else [])
+                runtime_warnings.extend(warning for warning in
+                    (skipped_landing_warnings if 'skipped_landing_warnings' in locals() else [])
+                    if warning not in runtime_warnings)
                 fingerprints = {json.dumps(item, ensure_ascii=False, sort_keys=True) for item in runtime_warnings}
                 for value in values:
                     for warning in value.get('warnings', []):
@@ -905,13 +949,20 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
                 and not force_ai):
             from .shopify_fastpath import run_products
             event('products', '目录和列表已通过，自动采集全部去重商品；保存可续跑断点')
-            result = run_products(root, all_products=True)
+            result = run_products(root, all_products=True, client=client)
             samples = read_json(root / 'samples.json')
         else:
             result = validate(root)
         preview = [{'id': str(s['product']['id']), 'title': s['product']['title'], 'url': s['url'],
                     'variants': len(s['product']['variants'])} for s in samples[:3]]
-        event('preview', '目录与全部商品已通过校验' if full_products else '目录与前 3 个商品样本已通过结果校验', samples=preview, validation=result)
+        failed_categories_path = root / 'failed_categories.json'
+        failed_categories = read_json(failed_categories_path) if failed_categories_path.is_file() else []
+        if failed_categories:
+            preview_message = f'可访问分类商品已通过校验，{len(failed_categories)} 个分类目标未完成'
+        else:
+            preview_message = ('目录与全部商品已通过校验' if full_products
+                               else '目录与前 3 个商品样本已通过结果校验')
+        event('preview', preview_message, samples=preview, validation=result)
         if manual and not practical and not simple:
             if confirm is None:
                 raise CrawlError('手动模式需要确认事件')
@@ -968,6 +1019,11 @@ def run_job(site, root, manual=False, confirm=None, emit=None, category=None, al
         if repair_path.is_file():
             report['llm_invocations'] += report['ai_repair'].get('invocations', 0)
         report['listing_categories'] = len(listing_info)
+        if failed_categories:
+            report['failed_category_targets'] = len(failed_categories)
+            report['listing_coverage'] = ('partial_access_blocked'
+                if any(item['code'] == 'collection_access_blocked' for item in failed_categories)
+                else 'partial_transport_failed')
         report['listing_links'] = sum(len(v) for v in read_json(root / 'detail_url.json').values())
         first = next(iter(listing_info.values()))
         report['first3_seconds'] = first.get('first3_seconds')

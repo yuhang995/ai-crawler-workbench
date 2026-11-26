@@ -17,14 +17,14 @@ def _utility_region(node):
                      r'(?:store|country|currency|language)[-_ ]?(?:switcher|selector)', marker, re.I)
 
 
-def catalog_url(url, base):
+def catalog_url(url, base, *, product_category=False):
     target, origin = urlsplit(url), urlsplit(base)
     path = unquote(target.path).lower()
     blocked_path = re.search(
-        r'/(?:products?|items|pages|blogs?|account|customer|login|logout|cart|checkout|search|catalogsearch|wishlist|support|privacy|terms)(?:/|\.|$)',
+        r'/(?:product|items|pages|blogs?|account|customer|login|logout|cart|checkout|search|catalogsearch|wishlist|support|privacy|terms)(?:/|\.|$)',
         path)
-    if path.rstrip('/') == '/products':
-        blocked_path = None
+    if path.rstrip('/') != '/products' and not (product_category and path.startswith('/products/')):
+        blocked_path = blocked_path or re.search(r'/products(?:/|\.|$)', path)
     return (target.scheme in {'https', 'http'} and target.netloc == origin.netloc
             and not target.username and path not in {'', '/'}
             and path.rstrip('/') != unquote(origin.path).lower().rstrip('/')
@@ -195,7 +195,33 @@ def detect_catalog_only(client, base, categories, evidence_dir=None, max_product
             'reason': 'no_three_product_catalog_listing'}
 
 
-def _regions(soup, base):
+def _shopify_navigation(soup, base):
+    return bool(soup.select_one('script[src*="cdn.shopify.com"], link[href*="cdn.shopify.com"]')
+                or re.search(r'Shopify\.(?:shop|routes|theme)|\bshopify-section\b',
+                             str(soup) if soup else '', re.I)
+                or any(re.match(r'^/(?:[a-z]{2}(?:-[a-z]{2})?/)?collections/[^/]+',
+                                urlsplit(urljoin(base, anchor['href'])).path, re.I)
+                       and urlsplit(urljoin(base, anchor['href'])).netloc == urlsplit(base).netloc
+                       for anchor in soup.select('nav a[href], header a[href], [role="navigation"] a[href]')))
+
+
+def _menu_catalog_anchor(anchor, base, shopify):
+    target = urljoin(base, anchor['href'])
+    if catalog_url(target, base):
+        return True
+    if shopify or not catalog_url(target, base, product_category=True):
+        return False
+    path = urlsplit(target).path
+    if len(path.strip('/').split('/')) > 2:
+        return True
+    item = anchor.find_parent('li') or anchor
+    return any(urljoin(base, peer['href']) != target
+               and urlsplit(urljoin(base, peer['href'])).path.startswith('/products/')
+               and catalog_url(urljoin(base, peer['href']), base, product_category=True)
+               for peer in item.parent.select('a[href]') if peer is not anchor)
+
+
+def _regions(soup, base, shopify):
     # The product nav can be a sibling of a utility-only header. Prefer the
     # semantic nav itself, including panels it explicitly controls.
     candidates = [node for node in soup.select(
@@ -205,7 +231,7 @@ def _regions(soup, base):
                   if node.find_parent('footer') is None
                   and not _utility_region(node)]
     def count(node):
-        return sum(catalog_url(urljoin(base, a['href']), base) for a in node.select('a[href]'))
+        return sum(_menu_catalog_anchor(a, base, shopify) for a in _anchors(node))
     candidates = [node for node in candidates if count(node)]
     if candidates:
         mobile = re.compile(r'mobile|drawer|hamburger|hide-for-(?:xlarge|large)|show-for-(?:small|medium-only)|d-lg-none', re.I)
@@ -232,8 +258,7 @@ def _regions(soup, base):
     # from becoming the entire category JSON when the real React header is a
     # div/custom component.
     return [node for node in soup.find_all('header')
-            if sum(catalog_url(urljoin(base, anchor['href']), base)
-                   for anchor in node.select('a[href]')) >= 2]
+            if count(node) >= 2]
 
 
 def _anchors(region):
@@ -259,6 +284,8 @@ def _comparison_url(url):
 def navigation_source(html, base, extra_documents=()):
     from .simple_nav import strip_category_tracking
     regions = []
+    shopify = _shopify_navigation(parse_soup(html), base)
+    product_category_urls = set()
     for document in [html, *extra_documents]:
         soup = parse_soup(document)
         for anchor in soup.select('a[href]'):
@@ -267,7 +294,8 @@ def navigation_source(html, base, extra_documents=()):
             node.decompose()
         for node in soup.find_all(string=lambda value: isinstance(value, Comment)):
             node.extract()
-        selected = _regions(soup, base)
+        selected = _regions(soup, base, shopify)
+        broad = not selected
         if not selected:
             # Some storefronts render their desktop mega menu in a custom
             # element (or directly below body) instead of header/nav.  The
@@ -277,24 +305,30 @@ def navigation_source(html, base, extra_documents=()):
             catalogue_count = sum(
                 catalog_url(urljoin(base, anchor.get('href', '')), base)
                 for anchor in soup.select('a[href]'))
-            if document != html or catalogue_count >= 3:
+            if catalogue_count >= 3:
                 selected = [soup]
         for region in selected:
             allowed_anchors = {id(anchor) for anchor in _anchors(region)}
             for anchor in region.select('a[href]'):
                 if id(anchor) not in allowed_anchors:
                     anchor.decompose()
+                elif not broad and _menu_catalog_anchor(anchor, base, shopify):
+                    target = urljoin(base, anchor['href'])
+                    if not catalog_url(target, base):
+                        product_category_urls.add(target)
             for node in [region, *region.find_all(True)]:
                 node.attrs = {key: value for key, value in node.attrs.items()
                               if key in {'href', 'id', 'aria-label', 'aria-controls', 'data-controls',
                                          'data-collapsible', 'class', 'hidden', 'role'}}
             regions.append(region)
     urls = list(dict.fromkeys(urljoin(base, a['href']) for region in regions for a in region.select('a[href]')
-                             if catalog_url(urljoin(base, a['href']), base)))
+                             if (urljoin(base, a['href']) in product_category_urls
+                                 or catalog_url(urljoin(base, a['href']), base))))
     fragments = list(dict.fromkeys(re.sub(r'\s+', ' ', str(region)) for region in regions))
     navigation = '\n'.join(fragments)
     return {'base_url': base, 'url_policy': 'custom', 'valid_urls': urls, 'bytes': len(navigation.encode('utf-8')),
             'source_navigation_urls': urls, 'navigation_html': navigation,
+            'product_category_urls': sorted(product_category_urls),
             'self_heal_html': navigation, 'navigation_outline': '',
             'text': 'BASE ' + base + '\nNAVIGATION HTML\n' + navigation,
             'navigation_coverage': {'source_urls': len(urls), 'ratio': 1.0 if urls else 0.0,

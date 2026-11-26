@@ -135,29 +135,26 @@ def _coverage_catalog_urls(urls):
     return {url for url in urls if not _COVERAGE_UTILITY.search(urlsplit(url).path)}
 
 
-def _custom_navigation_for_ai(html, base):
+def _custom_navigation_for_ai(html, base, extra_documents=()):
     """Build a bounded outline for stores whose category paths are arbitrary."""
-    from .custom_navigation import catalog_url, navigation_source
-    source = navigation_source(html, base)
+    from .custom_navigation import navigation_source
+    source = navigation_source(html, base, extra_documents)
+    return _custom_source_outline(source, base)
+
+
+def _custom_source_outline(source, base):
     if not source.get('valid_urls'):
         return None
-    soup = parse_soup(source.get('navigation_html', ''), 'lxml')
-    lines = []
+    soup = parse_soup(source['navigation_html'], 'lxml')
     allowed = set(source['valid_urls'])
-    for node in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'button', 'summary', 'a']):
-        label = _label(node).strip()
-        if not label:
-            continue
-        depth = min(6, len([parent for parent in node.parents
-                            if getattr(parent, 'name', None) in {'li', 'ul', 'ol', 'div', 'section', 'nav'}]))
-        prefix = '  ' * depth
-        if node.name == 'a':
-            target = _anchor_target(node, base)
-            if target not in allowed or not catalog_url(target, base):
-                continue
-            lines.append(prefix + '[a] ' + label + ' -> ' + _relative_url(target, base))
-        elif len(label) <= 120:
-            lines.append(prefix + '[label] ' + label)
+    for trigger in soup.select('nav > [aria-controls], nav > [data-controls], '
+                               'nav > [data-collapsible]'):
+        for attr in ('aria-controls', 'data-controls', 'data-collapsible'):
+            for target in trigger.get(attr, '').split():
+                panel = trigger.parent.find(id=target.lstrip('#'), recursive=False)
+                if panel is not None:
+                    panel['data-crawl-panel-owner'] = _label(trigger)
+    lines = _outline(soup, base, url_check=lambda target, _: target in allowed)
     text = ('BASE ' + base + '\nNAVIGATION OUTLINE (indentation preserves DOM ownership):\n'
             + '\n'.join(lines)
             + '\nAll [a] targets above are real same-origin catalogue hrefs. '
@@ -811,7 +808,7 @@ def _relative_url(url, base):
     return url
 
 
-def _outline(node, base):
+def _outline(node, base, *, url_check=legal_url):
     """Serialize navigation semantics, preserving ownership through indentation."""
     lines = []
     noise = {'menu', 'close', 'back', 'search', 'account', 'cart', 'more'}
@@ -833,19 +830,19 @@ def _outline(node, base):
                        for anchor in node.select('a[href]')
                        if not desktop_hidden(anchor)
                        and not anchor.has_attr('data-crawl-promo-card')
-                       and legal_url(_anchor_target(anchor, base), base)}
+                       and url_check(_anchor_target(anchor, base), base)}
     primary_promos = {}
     for anchor in node.select('a[data-crawl-promo-card][href]'):
         target = _anchor_target(anchor, base)
         identity = (branch_key(anchor), target)
-        if (not desktop_hidden(anchor) and legal_url(target, base)
+        if (not desktop_hidden(anchor) and url_check(target, base)
                 and identity not in textual_targets):
             primary_promos.setdefault(identity, anchor)
 
     def category_bearing(current):
-        if current.name == 'a' and legal_url(_anchor_target(current, base), base):
+        if current.name == 'a' and url_check(_anchor_target(current, base), base):
             return not desktop_hidden(current)
-        return bool(_category_urls(current, base))
+        return bool(owned_urls(current))
 
     def owned_urls(current):
         result = set()
@@ -853,7 +850,7 @@ def _outline(node, base):
             if desktop_hidden(anchor):
                 continue
             target = _anchor_target(anchor, base)
-            if not legal_url(target, base):
+            if not url_check(target, base):
                 continue
             if anchor.has_attr('data-crawl-promo-card'):
                 identity = (branch_key(anchor), target)
@@ -881,7 +878,7 @@ def _outline(node, base):
         anchor = current if current.name == 'a' else current.find_parent('a', href=True)
         if anchor is None or not anchor.has_attr('data-crawl-promo-card'):
             return False
-        return not legal_url(_anchor_target(anchor, base), base)
+        return not url_check(_anchor_target(anchor, base), base)
 
     def noise_label(value):
         folded = value.casefold().strip()
@@ -898,13 +895,13 @@ def _outline(node, base):
         if label_node.name == 'a':
             target = _anchor_target(label_node, base)
             return ('[a] ' + label + ' -> ' + _relative_url(target, base)
-                    if legal_url(target, base) else '[label] ' + label)
+                    if url_check(target, base) else '[label] ' + label)
         anchors = [anchor for anchor in label_node.select('a[href]')
                    if not desktop_hidden(anchor)
-                   and legal_url(_anchor_target(anchor, base), base)]
+                   and url_check(_anchor_target(anchor, base), base)]
         if len(anchors) == 1:
             target = _anchor_target(anchors[0], base)
-            if legal_url(target, base):
+            if url_check(target, base):
                 return '[a] ' + label + ' -> ' + _relative_url(target, base)
         return '[label] ' + label
 
@@ -990,7 +987,7 @@ def _outline(node, base):
             return
         if current.name == 'a':
             target = _anchor_target(current, base)
-            if legal_url(target, base):
+            if url_check(target, base):
                 value = item(current)
                 if value:
                     lines.append('  ' * min(depth, 5) + value)
@@ -1935,7 +1932,7 @@ PROMPT = '''根据下方网站导航缩进树与 <main> 首页系列链接，整
 ③ View All / Shop All / Shop Now > 等通用按钮用所属分组/列标题命名。无链接父标题只作为子项路径，不编造父项 URL。
 ④ 同一 URL 在不同一级菜单下必须分别保留完整路径。不要漏列标题及子分类，不把商品推荐卡片当分类。
 ⑤ 首页 main 独有且菜单未出现的系列链接用 URL 末尾 slug 作为平级键名放最后。
-⑥ URL 只能使用大纲 [a]/[home] 中的真实目标；相对路径必须用 BASE 补成绝对 URL，保留所有查询参数及重复参数。禁止 /product/<slug>、/products/<slug> 单品详情、/pages/、账户、购物车和 gift-card。若输入证据明确包含精确的 /products/ 商品中心首页，可将该首页作为目录保留。
+⑥ URL 只能使用大纲 [a]/[home] 中的真实目标；相对路径必须用 BASE 补成绝对 URL，保留所有查询参数及重复参数。非 Shopify 导航中明确列出的 /products/... 分类链接应保留。禁止 /product/<slug>、/products/<slug> 单品详情、/pages/、账户、购物车和 gift-card。若输入证据明确包含精确的 /products/ 商品中心首页，可将该首页作为目录保留。
 ⑦ Shop by Age & Stage、Shop by Concern 等桌面菜单里的真实筛选链接必须作为独立子分类。同路径但不同查询参数的链接分别保留，禁止删减或改写筛选参数。
 ⑧ 分栏标题下缩进的链接必须保留分栏归属，即使标题没有 URL。例如 Shop,Shop Shop by Benefit,Shop Shop by Benefit Hydration。栏内 Shop All 可作为该分组入口。
 '''
@@ -1946,7 +1943,7 @@ SELF_HEAL_PROMPT = '''当前通用导航大纲没有覆盖原始导航中的大�
 请完成以下闭环：
 1. 检查 header.html 的真实 DOM 结构，包括 template、隐藏面板、无链接分组标题及父子归属。
 2. 编写 extract_custom.py（只使用 Python 标准库或 BeautifulSoup），从 header.html 提取本网站的真实 1~3 级商品分类树，输出 category_candidate.json。
-3. 输出格式为 {"entries":[{"key":"一级,一级 二级","url":"完整URL"}]}。URL 必须逐字来自 valid_urls.json；不得输出单品详情、pages/blog/account/cart/search/gift-card。valid_urls.json 明确包含精确 /products/ 时允许保留该商品中心首页。
+3. 输出格式为 {"entries":[{"key":"一级,一级 二级","url":"完整URL"}]}。URL 必须逐字来自 valid_urls.json；不得输出单品详情、pages/blog/account/cart/search/gift-card。非 Shopify 主导航证据中的 /products/... 分类不是单品详情。valid_urls.json 明确包含精确 /products/ 时允许保留该商品中心首页。
 4. 同 URL 在不同可见菜单归属下可以重复；通用 Shop All/View All 要使用所属分组名；保留页面显示大小写和深度优先顺序。
    桌面菜单中的筛选链接如 Shop by Age & Stage、Shop by Concern 必须作为独立子分类；同路径不同查询参数不得合并或删减。
    保留分栏标题与栏内链接的父子关系。无链接分栏标题保留在子项路径中，栏内 Shop All 可作为分组入口。
@@ -2083,8 +2080,7 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
     root = Path(root)
     (root / 'evidence').mkdir(parents=True, exist_ok=True)
     if slim_data.get('url_policy') == 'custom' and '<' in slim_data.get('text', ''):
-        compact_custom = _custom_navigation_for_ai(
-            slim_data.get('navigation_html') or slim_data.get('self_heal_html', ''), base_url)
+        compact_custom = _custom_source_outline(slim_data, base_url)
         if compact_custom:
             slim_data = compact_custom
     (root / 'evidence/slim_nav.txt').write_text(slim_data['text'], encoding='utf-8')
@@ -2241,7 +2237,9 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
             url_check = legal_url
             if slim_data.get('url_policy') == 'custom':
                 from .custom_navigation import catalog_url
-                url_check = catalog_url
+                product_categories = set(slim_data.get('product_category_urls', []))
+                url_check = lambda url, base: (catalog_url(url, base)
+                    or legal_url(url, base) or url in product_categories)
             categories, warnings = clean_categories(
                 output.get('entries', []), slim_data['valid_urls'], base_url, url_check=url_check)
             source_urls = set(slim_data.get('coverage_source_urls',
@@ -2394,6 +2392,38 @@ def extract_url_json_with_ai(root, base_url, slim_data) -> dict:
     return categories
 
 
+def _merge_navigation_data(original, extra, base):
+    """Keep the richer outline first and retain independent source evidence."""
+    primary, secondary = sorted((original, extra),
+                                key=lambda value: len(value['source_navigation_urls']),
+                                reverse=True)
+    merged = dict(primary)
+    for key in ('valid_urls', 'source_navigation_urls', 'coverage_source_urls',
+                'product_category_urls'):
+        merged[key] = list(dict.fromkeys(primary.get(key, []) + secondary.get(key, [])))
+    if any(value.get('url_policy') == 'custom' for value in (primary, secondary)):
+        merged['url_policy'] = 'custom'
+    for key in ('navigation_html', 'self_heal_html', 'navigation_outline'):
+        merged[key] = '\n'.join(dict.fromkeys(filter(None, (primary[key], secondary[key]))))
+    if (set(secondary['valid_urls']) - set(primary['valid_urls'])
+            or set(secondary['source_navigation_urls']) - set(primary['source_navigation_urls'])
+            or set(secondary['navigation_coverage'].get('outline_roots', []))
+            - set(primary['navigation_coverage'].get('outline_roots', []))):
+        merged['text'] += '\nADDITIONAL MENU EVIDENCE:\n' + secondary['text']
+    coverage = dict(primary['navigation_coverage'])
+    for key in ('source_roots', 'primary_root_bar', 'outline_roots'):
+        coverage[key] = list(dict.fromkeys(coverage.get(key, [])
+                          + secondary['navigation_coverage'].get(key, [])))
+    expected = set(merged['coverage_source_urls'])
+    observed = _urls_from_outline(merged['navigation_outline'].splitlines(), base)
+    ratio = len(expected & observed) / len(expected) if expected else 1.0
+    coverage.update(source_urls=len(expected), outline_urls=len(observed),
+                    covered_urls=len(expected & observed), ratio=round(ratio, 4))
+    coverage['needs_self_heal'] |= ratio < OUTLINE_COVERAGE_THRESHOLD
+    merged['navigation_coverage'] = coverage
+    return merged
+
+
 def run_simple(root, base, html):
     root = Path(root)
     (root / 'evidence').mkdir(parents=True, exist_ok=True)
@@ -2461,11 +2491,12 @@ def run_simple(root, base, html):
     # Before paying for a browser render, recover arbitrary same-origin
     # catalogue paths from non-standard navigation containers.  This is URL-
     # and evidence-driven and does not depend on a site/domain allow-list.
-    if len(data.get('source_navigation_urls', [])) < RENDER_MIN_CATEGORY_LINKS:
-        custom_data = _custom_navigation_for_ai(html, base)
+    custom_data = _custom_navigation_for_ai(html, base)
+    if (len(data.get('source_navigation_urls', [])) < RENDER_MIN_CATEGORY_LINKS
+            or (custom_data and custom_data.get('product_category_urls'))):
         if (custom_data and len(custom_data.get('source_navigation_urls', []))
                 > len(data.get('source_navigation_urls', []))):
-            data = custom_data
+            data = _merge_navigation_data(data, custom_data, base)
     if (not data['has_static_navigation']
             or len(data.get('source_navigation_urls', [])) < RENDER_MIN_CATEGORY_LINKS
             or data.get('bytes', 0) < RENDER_MIN_SLIM_BYTES
@@ -2475,36 +2506,15 @@ def run_simple(root, base, html):
         except Exception as error:
             snapshots = [p.read_text(encoding='utf-8') for p in (root/'evidence').glob('home-menu-*.html')]
             save_json(root / 'browser_warning.json', {'error': str(error)})
-        # Keep snapshots, but avoid repeating byte-identical nav trees.
-        seen = {data['navigation_html']}
         for snapshot in snapshots:
             extra = slim_html_for_ai(snapshot, base)
-            if not extra.get('source_navigation_urls'):
-                custom_extra = _custom_navigation_for_ai(snapshot, base)
-                if (custom_extra and len(custom_extra.get('source_navigation_urls', []))
-                        > len(data.get('source_navigation_urls', []))):
-                    extra = custom_extra
-            if (extra.get('url_policy') == 'custom'
-                    and len(extra.get('source_navigation_urls', []))
-                    > len(data.get('source_navigation_urls', []))):
-                data = extra
-                seen.add(extra.get('navigation_html', ''))
-                continue
-            if extra['navigation_html'] not in seen:
-                seen.add(extra['navigation_html'])
-                data['text'] += '\nRENDERED SNAPSHOT:\n' + extra['text']
-            data['valid_urls'] = list(dict.fromkeys(data['valid_urls'] + extra['valid_urls']))
-            if (extra['navigation_coverage'].get('source_urls', 0)
-                    > data['navigation_coverage'].get('source_urls', 0)):
-                data['navigation_coverage'] = extra['navigation_coverage']
-                data['source_navigation_urls'] = extra['source_navigation_urls']
-                data['self_heal_html'] = extra['self_heal_html']
-                data['has_static_navigation'] = extra['has_static_navigation']
+            data = _merge_navigation_data(data, extra, base)
             # The browser may reveal a Shopify page-builder catalogue that
             # was absent from the server shell.  Re-run the same deterministic
             # proof on that rendered DOM before invoking AI.
             rendered_catalog = _shopify_catalog_landing_navigation(snapshot, base)
-            if rendered_catalog:
+            if (rendered_catalog and set(data['source_navigation_urls'])
+                    <= set(rendered_catalog.values())):
                 urls = list(dict.fromkeys(rendered_catalog.values()))
                 save_json(root / 'evidence/simple_nav_sources.json', {
                     'base_url': base, 'valid_urls': urls,
@@ -2520,6 +2530,11 @@ def run_simple(root, base, html):
                 return rendered_catalog, {'method': 'simple_nav',
                                           'source': 'rendered_shopify_catalog_landing_navigation',
                                           'roots': list(rendered_catalog)}, [html, snapshot]
+        if snapshots and (data.get('url_policy') == 'custom'
+                          or len(data['source_navigation_urls']) < RENDER_MIN_CATEGORY_LINKS):
+            expanded = _custom_navigation_for_ai(html, base, snapshots)
+            if expanded:
+                data = _merge_navigation_data(data, expanded, base)
         if len(data.get('source_navigation_urls', [])) < RENDER_MIN_CATEGORY_LINKS:
             broad_lines, broad_urls = [], []
             for snapshot in snapshots:

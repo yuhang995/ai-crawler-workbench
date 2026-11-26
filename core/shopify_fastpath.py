@@ -1,5 +1,6 @@
 """Deterministic Shopify reader. Adapted from the user's two Shopify templates."""
 import csv
+import hashlib
 import sys
 import gc
 import json
@@ -21,6 +22,19 @@ except OverflowError:  # pragma: no cover
 
 FEED_PAGE_SIZE = 50
 FULL_SWEEP_FEED_PAGE_SIZE = 250
+
+
+def listing_access_blocked(error):
+    """Recognize access failures without treating parser or transport bugs as blocked."""
+    from .common import AccessChallenge
+
+    if isinstance(error, AccessChallenge):
+        return True
+    response = getattr(error, 'response', None)
+    if getattr(response, 'status_code', None) == 403 or getattr(error, 'code', None) == 403:
+        return True
+    return isinstance(error, CrawlError) and bool(re.search(
+        r'(?:HTTP(?: Error)?\s*[: ]\s*403\b|JSON 接口持续返回短暂验证页)', str(error), re.I))
 
 
 class ListingCollectionTimeout(CrawlError):
@@ -2605,8 +2619,8 @@ def run_links(root):
     return result
 
 
-def run_products(root, all_products=False):
-    from .common import Client
+def run_products(root, all_products=False, client=None):
+    from .common import Client, transient_collection_error, redact_sensitive
     from .navigation_release import require_release, digest
     root = Path(root)
     release = require_release(root)
@@ -2619,7 +2633,10 @@ def run_products(root, all_products=False):
         urls = urls[:3]
     if not urls:
         raise CrawlError('已审核范围没有可采集商品')
-    client = Client()
+    if client is None:
+        client = Client()
+    if all_products and callable(getattr(client, 'enable_full_pacing', None)):
+        client.enable_full_pacing()
     detection_file = root / 'detection.json'
     if detection_file.is_file():
         detected_origin = detail_shopify_origin(read_json(detection_file))
@@ -2627,7 +2644,9 @@ def run_products(root, all_products=False):
             client.shopify_origin = detected_origin
     checkpoint_file = root / 'product_checkpoint.json'
     checkpoint = read_json(checkpoint_file) if checkpoint_file.is_file() else {}
-    version = release['navigation_version'] + ':' + binding['sha256']
+    legacy_version = release['navigation_version'] + ':' + binding['sha256']
+    legacy_checkpoint = checkpoint if checkpoint.get('version') == legacy_version else {}
+    version = 'shopify-product-url-v1'
     if checkpoint.get('version') != version:
         checkpoint = {'version': version, 'completed': {}}
     cache = root / 'evidence' / 'product-checkpoints'; cache.mkdir(parents=True, exist_ok=True)
@@ -2641,7 +2660,16 @@ def run_products(root, all_products=False):
     try:
         for index, url in enumerate(urls):
             saved = checkpoint['completed'].get(url)
-            file = cache / f'{index:06d}.json'
+            file = cache / (hashlib.sha256(url.encode('utf-8')).hexdigest() + '.json')
+            legacy = legacy_checkpoint.get('completed', {}).get(url)
+            if not saved and legacy:
+                old_file = cache / f'{index:06d}.json'
+                if old_file.is_file() and legacy.get('sha256') == digest(old_file):
+                    previous = read_json(old_file)
+                    if previous.get('url') == url:
+                        save_json(file, previous)
+                        saved = checkpoint['completed'][url] = {'sha256': digest(file)}
+                        save_json(checkpoint_file, checkpoint)
             if saved and file.is_file() and saved.get('sha256') == digest(file):
                 sample = read_json(file)
                 if sample.get('url') != url:
@@ -2650,15 +2678,9 @@ def run_products(root, all_products=False):
                 try:
                     sample = fetch_product(client, url)
                 except CrawlError as error:
-                    message = str(error).casefold()
-                    transient = any(marker in message for marker in (
-                        'could not resolve host', 'name resolution', 'dns',
-                        'curl: (6)', 'curl: (28)', 'curl: (35)', 'curl: (56)',
-                        'ssl_connect', 'connection closed', 'connection reset',
-                        'timed out', 'timeout'))
-                    if not all_products or not transient:
+                    if not all_products or not transient_collection_error(error):
                         raise
-                    failed_products.append({'url': url, 'error': str(error),
+                    failed_products.append({'url': url, 'error': redact_sensitive(error, getattr(client, 'proxy', None)),
                                             'exception_type': type(error).__name__,
                                             'code': 'transient_network_error'})
                     transient_failures.append(failed_products[-1])
